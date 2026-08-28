@@ -1,0 +1,20 @@
+django>=5.0,<5.1
+djangorestframework
+django-filter
+drf-spectacular
+django-cors-headers
+whitenoise
+python-dotenv
+dj-database-url
+psycopg[binary]
+gunicorn
+
+# LLM
+openai>=1.0
+tenacity
+
+# Ingest
+feedparser
+httpx
+trafilatura
+python-dateutil

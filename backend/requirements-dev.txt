@@ -1,0 +1,11 @@
+-r requirements.txt
+
+pytest
+pytest-django
+pytest-cov
+pytest-httpx
+model-bakery
+
+# Pinned: `ruff format --check` is a CI gate, and formatting changes between
+# minor releases would break the build without a code change.
+ruff==0.14.5

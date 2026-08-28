@@ -1,0 +1,15 @@
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+extend-exclude = ["*/migrations/0001_initial.py"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# Settings modules legitimately use star imports to layer over base.py.
+"config/settings/dev.py" = ["F403", "F405"]
+"config/settings/prod.py" = ["F403", "F405"]
+# Prompt bodies are copied verbatim from docs/PROMPTS.md. Rewrapping them would
+# change what the model actually receives.
+"apps/common/prompts/seeds.py" = ["E501"]

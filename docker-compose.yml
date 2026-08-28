@@ -1,0 +1,44 @@
+# Local development only. Production compose lives in deploy/.
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-newswiki}
+      POSTGRES_USER: ${POSTGRES_USER:-newswiki}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-newswiki} -d ${POSTGRES_DB:-newswiki}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python manage.py runserver 0.0.0.0:8000
+    env_file:
+      - .env
+    environment:
+      DJANGO_ENV: dev
+      # .env points DATABASE_URL at localhost for host-side work; inside the
+      # network the host is the service name.
+      DATABASE_URL: postgres://${POSTGRES_USER:-newswiki}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-newswiki}
+    volumes:
+      # Source mount gives runserver hot reload; the anonymous volume keeps the
+      # image's collected static files from being hidden by the mount.
+      - ./backend:/app/backend
+      - /app/backend/staticfiles
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:
