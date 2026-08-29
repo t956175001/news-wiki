@@ -23,6 +23,11 @@ guarding every lookup.
 import math
 from collections.abc import Collection, Mapping
 
+# Lives in `apps/common` because `apps/common/llm/invoke.py` retries on it, and
+# the LLM layer cannot import the wiki app. Re-exported here because this is the
+# module that defines what the shape contract *is*.
+from apps.common.exceptions import SchemaError
+
 # ARCHITECTURE 3.2: `Entity.entity_type` has `choices`, and Django does not
 # enforce them on save. Anything outside this set would reach the DB and break
 # the graph's category axis, so it is folded into "other" here instead.
@@ -42,13 +47,12 @@ DEFAULT_CONFIDENCE = 1.0
 EVIDENCE_PENALTY = 0.8
 
 
-class SchemaError(ValueError):
-    """LLM output does not match the contract; the caller should retry the call.
-
-    Deliberately a `ValueError` and not an `AppError`: it never reaches a view.
-    It is an internal signal to `extract_pipeline`'s tenacity policy, which
-    retries on it alongside `json.JSONDecodeError`.
-    """
+__all__ = [
+    "SchemaError",
+    "validate_concepts",
+    "validate_entities",
+    "validate_linkages",
+]
 
 
 # --- primitives ---------------------------------------------------------

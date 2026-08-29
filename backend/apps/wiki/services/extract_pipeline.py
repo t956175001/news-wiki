@@ -18,24 +18,24 @@ import logging
 import time
 import uuid
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from decimal import Decimal
 
 from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
-from tenacity import RetryError, Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
-from apps.common.exceptions import ExtractionStepError, LLMError
+from apps.common.exceptions import BudgetExceededError, ExtractionStepError
 from apps.common.llm import LLMClient, get_llm_client
+from apps.common.llm.invoke import StepMeta, invoke_json, ms_since
 from apps.common.llm.pricing import estimate_cost
-from apps.common.prompts.service import get_version, render
+from apps.common.prompts.service import get_version
 from apps.ingest.models import RawArticle
 from apps.ops.models import ExtractionRun
 from apps.wiki.models import Concept, Entity, Evidence, Linkage
 
 from .normalize import merge_aliases, normalize_name, normalize_predicate
-from .validators import SchemaError, validate_concepts, validate_entities, validate_linkages
+from .validators import validate_concepts, validate_entities, validate_linkages
 
 logger = logging.getLogger(__name__)
 
@@ -59,67 +59,17 @@ _STEP_BY_PROMPT = {
     PROMPT_LINKAGES: STEP_LINKAGES,
 }
 
-MAX_ATTEMPTS = 3
-
-# Enough to ride out a transient upstream hiccup without holding a Gunicorn
-# thread for a minute; the model rewriting its JSON usually works on attempt two.
-_BACKOFF = wait_exponential(multiplier=1, min=1, max=8)
-
 # ARCHITECTURE 3.2 documents Evidence.snippet as "原文片段，≤500 字". The prompts
 # ask for 200; this is the backstop for when the model ignores that.
 SNIPPET_LIMIT = 500
 
-# How much of a malformed response to quote back in the error. Enough to see what
-# the model actually did, short enough to not fill the log with one bad reply.
-RESPONSE_PREVIEW_CHARS = 1000
-
-_JSON_FENCE_PREFIXES = ("```json", "```JSON", "```")
-
 
 @dataclass
-class StepMeta:
-    """One row of `ExtractionRun.step_metrics`. Shape: ARCHITECTURE 3.3."""
+class ExtractionOutcome:
+    """What `execute_extraction` concluded, for the caller to finalise the run."""
 
-    status: str = "done"
-    elapsed_ms: int = 0
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    attempts: int = 0
-    count: int = 0
-    error_message: str = ""
-    model: str = ""
-    skipped: dict = field(default_factory=dict)
-
-    def merge(self, other: "StepMeta") -> None:
-        """Fold another batch's numbers into this step's running total."""
-        self.elapsed_ms += other.elapsed_ms
-        self.prompt_tokens += other.prompt_tokens
-        self.completion_tokens += other.completion_tokens
-        self.attempts += other.attempts
-        self.count += other.count
-        self.model = other.model or self.model
-        for key, value in other.skipped.items():
-            self.skipped[key] = self.skipped.get(key, 0) + value
-        if other.status == "failed":
-            self.status = "failed"
-            self.error_message = other.error_message
-
-    def as_dict(self) -> dict:
-        data = {
-            "status": self.status,
-            "elapsed_ms": self.elapsed_ms,
-            "prompt_tokens": self.prompt_tokens,
-            "completion_tokens": self.completion_tokens,
-            "count": self.count,
-            "attempts": self.attempts,
-        }
-        if self.status == "failed":
-            data["error_message"] = self.error_message
-        # Only present when something was actually dropped, so a clean run's
-        # metrics stay as documented.
-        if any(self.skipped.values()):
-            data["skipped"] = {key: value for key, value in self.skipped.items() if value}
-        return data
+    status: str
+    error: str = ""
 
 
 # --- corpus -------------------------------------------------------------
@@ -165,106 +115,7 @@ def corpus_texts(articles: Sequence[RawArticle]) -> dict[int, str]:
     return {article.pk: _body(article) for article in articles}
 
 
-# --- LLM invocation -----------------------------------------------------
-
-
-def _strip_json_fence(content: str) -> str:
-    """Unwrap a ```json fence.
-
-    `response_format={"type": "json_object"}` is supposed to make this
-    unnecessary, and the prompts say not to do it, but a fenced reply is a
-    perfectly good answer wrapped in three characters — cheaper to unwrap than
-    to spend a whole retry on.
-    """
-    text = content.strip()
-    for prefix in _JSON_FENCE_PREFIXES:
-        if text.startswith(prefix):
-            text = text[len(prefix) :].strip()
-            break
-    else:
-        return text
-    if text.endswith("```"):
-        text = text[:-3].strip()
-    return text
-
-
-def _loads(content: str, prompt_key: str) -> dict:
-    try:
-        return json.loads(_strip_json_fence(content))
-    except json.JSONDecodeError as exc:
-        raise SchemaError(
-            f"{prompt_key} did not return JSON ({exc}). Response began: {content[:RESPONSE_PREVIEW_CHARS]!r}"
-        ) from exc
-
-
-def _invoke_json(
-    prompt_key: str,
-    ctx: dict,
-    *,
-    client: LLMClient,
-    run_id: str,
-    validate=None,
-    sleep=time.sleep,
-    **llm_opts,
-):
-    """Call the model, parse its JSON, and validate — all inside one retry loop.
-
-    Returns `(value, StepMeta)`, where `value` is whatever `validate` returned
-    (the three steps pass a validator, so they get back `(items, skipped)`) or
-    the raw parsed payload when no validator is given.
-
-    Validation runs *inside* the retry rather than after it on purpose. A payload
-    that parses but is missing `name` is exactly the kind of mistake a second
-    attempt fixes, and leaving it outside would make `SchemaError` from the
-    validators a hard failure while the identical error from `json.loads` retries.
-
-    Token counts accumulate across attempts: a retry is a real request that a
-    real invoice will list.
-    """
-    meta = StepMeta()
-    started = time.monotonic()
-
-    def _attempt():
-        meta.attempts += 1
-        prompt = render(prompt_key, ctx)
-        result = client.chat(
-            [{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"},
-            run_id=run_id,
-            **llm_opts,
-        )
-        meta.prompt_tokens += result["prompt_tokens"]
-        meta.completion_tokens += result["completion_tokens"]
-        meta.model = result["model"]
-
-        payload = _loads(result["content"], prompt_key)
-        return validate(payload) if validate is not None else payload
-
-    retrying = Retrying(
-        retry=retry_if_exception_type((LLMError, SchemaError, json.JSONDecodeError)),
-        wait=_BACKOFF,
-        stop=stop_after_attempt(MAX_ATTEMPTS),
-        sleep=sleep,
-    )
-
-    try:
-        value = retrying(_attempt)
-    except RetryError as exc:
-        cause = exc.last_attempt.exception()
-        meta.status = "failed"
-        meta.error_message = str(cause)
-        meta.elapsed_ms = _ms_since(started)
-        logger.error(
-            "run_id=%s step %s failed after %s attempt(s): %s", run_id, prompt_key, meta.attempts, cause
-        )
-        raise ExtractionStepError(prompt_key, meta.as_dict(), cause) from cause
-
-    meta.elapsed_ms = _ms_since(started)
-    return value, meta
-
-
-def _ms_since(started: float) -> int:
-    return int((time.monotonic() - started) * 1000)
+# --- prompt material ----------------------------------------------------
 
 
 def _entities_json(entities: Iterable[dict]) -> str:
@@ -296,6 +147,7 @@ def extract_entities(
     client: LLMClient | None = None,
     run_id: str = "-",
     article_texts: dict[int, str] | None = None,
+    trigger: str = "manual",
     sleep=time.sleep,
 ) -> tuple[list[dict], StepMeta]:
     """Step 1: concrete entities out of the corpus."""
@@ -304,12 +156,13 @@ def extract_entities(
     def _validate(payload):
         return validate_entities(payload, allowed, article_texts=article_texts)
 
-    (items, skipped), meta = _invoke_json(
+    (items, skipped), meta = invoke_json(
         PROMPT_ENTITIES,
         {"raw_text": corpus},
         client=client or get_llm_client(),
         run_id=run_id,
         validate=_validate,
+        trigger=trigger,
         sleep=sleep,
     )
     meta.count = len(items)
@@ -325,6 +178,7 @@ def extract_concepts(
     client: LLMClient | None = None,
     run_id: str = "-",
     article_texts: dict[int, str] | None = None,
+    trigger: str = "manual",
     sleep=time.sleep,
 ) -> tuple[list[dict], StepMeta]:
     """Step 2: abstract concepts, told which entities are already spoken for."""
@@ -333,12 +187,13 @@ def extract_concepts(
     def _validate(payload):
         return validate_concepts(payload, allowed, article_texts=article_texts)
 
-    (items, skipped), meta = _invoke_json(
+    (items, skipped), meta = invoke_json(
         PROMPT_CONCEPTS,
         {"raw_text": corpus, "entities_json": _entities_json(entities)},
         client=client or get_llm_client(),
         run_id=run_id,
         validate=_validate,
+        trigger=trigger,
         sleep=sleep,
     )
     meta.count = len(items)
@@ -355,6 +210,7 @@ def extract_linkages(
     client: LLMClient | None = None,
     run_id: str = "-",
     article_texts: dict[int, str] | None = None,
+    trigger: str = "manual",
     sleep=time.sleep,
 ) -> tuple[list[dict], StepMeta]:
     """Step 3: relations, restricted to the names steps 1 and 2 produced."""
@@ -365,7 +221,7 @@ def extract_linkages(
     def _validate(payload):
         return validate_linkages(payload, allowed, entity_names, concept_names, article_texts=article_texts)
 
-    (items, skipped), meta = _invoke_json(
+    (items, skipped), meta = invoke_json(
         PROMPT_LINKAGES,
         {
             "raw_text": corpus,
@@ -375,6 +231,7 @@ def extract_linkages(
         client=client or get_llm_client(),
         run_id=run_id,
         validate=_validate,
+        trigger=trigger,
         sleep=sleep,
     )
     meta.count = len(items)
@@ -612,7 +469,7 @@ def _batches(articles: Sequence[RawArticle], size: int) -> Iterable[Sequence[Raw
         yield articles[start : start + size]
 
 
-def _record(run: ExtractionRun, totals: dict[str, StepMeta], step: str, meta: StepMeta) -> None:
+def record_step(run: ExtractionRun, totals: dict[str, StepMeta], step: str, meta: StepMeta) -> None:
     """Fold a step's metrics into the run and save immediately.
 
     Saved after every step, not at the end: extraction is a long task that the
@@ -625,13 +482,18 @@ def _record(run: ExtractionRun, totals: dict[str, StepMeta], step: str, meta: St
     run.save(update_fields=["step_metrics"])
 
 
-def _finish(
+def finish_run(
     run: ExtractionRun,
     totals: dict[str, StepMeta],
     status: str,
     started: float,
     error: str = "",
 ) -> ExtractionRun:
+    """Close a run: final status, token totals, cost, and elapsed time.
+
+    Cost is summed per step rather than over the run's grand totals because each
+    step records the model that actually answered it, and a run can span models.
+    """
     run.status = status
     run.error_message = error
     run.prompt_tokens = sum(meta.prompt_tokens for meta in totals.values())
@@ -641,7 +503,7 @@ def _finish(
         (estimate_cost(meta.model, meta.prompt_tokens, meta.completion_tokens) for meta in totals.values()),
         Decimal("0"),
     )
-    run.elapsed_ms = _ms_since(started)
+    run.elapsed_ms = ms_since(started)
     run.finished_at = timezone.now()
     run.save()
     return run
@@ -658,37 +520,43 @@ def _mark_articles(articles: Sequence[RawArticle], extracted_ids: set[int]) -> N
         RawArticle.objects.filter(pk__in=failed_ids).update(extract_status="failed")
 
 
-def run_extraction(
-    articles: Sequence[RawArticle],
-    trigger: str = "manual",
-    *,
-    client: LLMClient | None = None,
-    sleep=time.sleep,
-) -> ExtractionRun:
-    """Run all three steps over *articles* and record everything on an ExtractionRun.
+def start_run(trigger: str = "manual", articles_in: int = 0) -> ExtractionRun:
+    """Open a run row with this moment's prompt versions frozen onto it.
 
-    Batched at `settings.EXTRACT_BATCH_SIZE` articles per call. Each batch runs
-    its own three steps, because step 2 and 3 must be given the entity list from
-    the same corpus they are quoting.
-
-    A batch that fails part-way stops the run, but everything extracted before it
-    is still persisted: `status` becomes `partial` rather than `failed` whenever
-    at least one step completed.
+    Separate from `run_extraction` because the HTTP layer needs the `run_id`
+    before the work starts: the request returns it immediately and the frontend
+    polls `/api/v1/ops/runs/{run_id}/` while a background thread does the work.
     """
-    articles = list(articles)
-    started = time.monotonic()
-
-    run = ExtractionRun.objects.create(
+    return ExtractionRun.objects.create(
         run_id=uuid.uuid4().hex,
         status="running",
         trigger=trigger,
-        articles_in=len(articles),
+        articles_in=articles_in,
         prompt_versions={key: get_version(key) for key in SNAPSHOT_PROMPT_KEYS},
     )
+
+
+def execute_extraction(
+    run: ExtractionRun,
+    articles: Sequence[RawArticle],
+    totals: dict[str, StepMeta],
+    *,
+    client: LLMClient | None = None,
+    trigger: str = "manual",
+    sleep=time.sleep,
+) -> ExtractionOutcome:
+    """Run the three steps plus persist onto an existing *run*.
+
+    Writes its metrics into *totals* rather than finalising the run, so that
+    `run_daily` can fold the brief's numbers into the same accounting before the
+    single `finish_run` that closes the row.
+    """
+    articles = list(articles)
+    run.articles_in = len(articles)
+    run.save(update_fields=["articles_in"])
     logger.info("run_id=%s extraction started over %s article(s)", run.run_id, len(articles))
 
     llm = client or get_llm_client()
-    totals: dict[str, StepMeta] = {}
     all_entities: list[dict] = []
     all_concepts: list[dict] = []
     all_linkages: list[dict] = []
@@ -705,6 +573,7 @@ def run_extraction(
                 "client": llm,
                 "run_id": run.run_id,
                 "article_texts": texts,
+                "trigger": trigger,
                 "sleep": sleep,
             }
 
@@ -712,17 +581,17 @@ def run_extraction(
             # step 2 dies, step 1's entities have already been banked and will
             # still be persisted. That is what "partial" is supposed to mean.
             entities, meta = extract_entities(corpus, allowed, **step_kwargs)
-            _record(run, totals, STEP_ENTITIES, meta)
+            record_step(run, totals, STEP_ENTITIES, meta)
             all_entities.extend(entities)
             completed_steps += 1
 
             concepts, meta = extract_concepts(corpus, entities, allowed, **step_kwargs)
-            _record(run, totals, STEP_CONCEPTS, meta)
+            record_step(run, totals, STEP_CONCEPTS, meta)
             all_concepts.extend(concepts)
             completed_steps += 1
 
             linkages, meta = extract_linkages(corpus, entities, concepts, allowed, **step_kwargs)
-            _record(run, totals, STEP_LINKAGES, meta)
+            record_step(run, totals, STEP_LINKAGES, meta)
             all_linkages.extend(linkages)
             completed_steps += 1
 
@@ -736,12 +605,18 @@ def run_extraction(
         run.step_metrics[_STEP_BY_PROMPT[exc.step]] = _merged_failure(totals, exc)
         run.save(update_fields=["step_metrics"])
 
+    except BudgetExceededError as exc:
+        # The guard fires before the request, so nothing was spent on this step.
+        # The batches already done stay persisted; the run reports why it stopped.
+        error = exc.detail
+        logger.warning("run_id=%s stopped by the daily budget guard: %s", run.run_id, exc.detail)
+
     if all_entities or all_concepts or all_linkages:
         persist_started = time.monotonic()
         counts = persist(run, articles, all_entities, all_concepts, all_linkages)
         run.step_metrics[STEP_PERSIST] = {
             "status": "done",
-            "elapsed_ms": _ms_since(persist_started),
+            "elapsed_ms": ms_since(persist_started),
             **counts,
         }
         run.entities_saved = counts["entities"]
@@ -756,7 +631,33 @@ def run_extraction(
         status = "failed"
 
     _mark_articles(articles, extracted_ids if status != "failed" else set())
-    _finish(run, totals, status, started, error)
+    return ExtractionOutcome(status=status, error=error)
+
+
+def run_extraction(
+    articles: Sequence[RawArticle],
+    trigger: str = "manual",
+    *,
+    run: ExtractionRun | None = None,
+    client: LLMClient | None = None,
+    sleep=time.sleep,
+) -> ExtractionRun:
+    """Run all three steps over *articles* and record everything on an ExtractionRun.
+
+    Batched at `settings.EXTRACT_BATCH_SIZE` articles per call. Each batch runs
+    its own three steps, because step 2 and 3 must be given the entity list from
+    the same corpus they are quoting.
+
+    A batch that fails part-way stops the run, but everything extracted before it
+    is still persisted: `status` becomes `partial` rather than `failed` whenever
+    at least one step completed.
+    """
+    started = time.monotonic()
+    run = run or start_run(trigger)
+    totals: dict[str, StepMeta] = {}
+
+    outcome = execute_extraction(run, articles, totals, client=client, trigger=trigger, sleep=sleep)
+    finish_run(run, totals, outcome.status, started, outcome.error)
 
     logger.info(
         "run_id=%s extraction %s: %s entities, %s concepts, %s linkages, %s tokens, %s CNY",
@@ -774,14 +675,6 @@ def run_extraction(
 def _merged_failure(totals: dict[str, StepMeta], exc: ExtractionStepError) -> dict:
     """Fold a failed step's metrics into whatever earlier batches recorded for it."""
     step = _STEP_BY_PROMPT[exc.step]
-    failed = StepMeta(
-        status="failed",
-        elapsed_ms=exc.metrics["elapsed_ms"],
-        prompt_tokens=exc.metrics["prompt_tokens"],
-        completion_tokens=exc.metrics["completion_tokens"],
-        attempts=exc.metrics["attempts"],
-        error_message=exc.metrics.get("error_message", ""),
-    )
     running = totals.setdefault(step, StepMeta())
-    running.merge(failed)
+    running.merge(StepMeta.from_metrics(exc.metrics))
     return running.as_dict()

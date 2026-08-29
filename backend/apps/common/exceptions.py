@@ -69,3 +69,12 @@ class BudgetExceededError(AppError):
     """The daily LLM spend cap tripped; no further calls this day."""
 
     default_code = "BUDGET_EXCEEDED"
+
+
+class SchemaError(ValueError):
+    """LLM output does not match the contract; the caller should retry the call.
+
+    Deliberately a `ValueError` and not an `AppError`: it never reaches a view.
+    It is an internal signal to the tenacity policy in `apps/common/llm/invoke.py`,
+    which retries on it alongside `json.JSONDecodeError`.
+    """
