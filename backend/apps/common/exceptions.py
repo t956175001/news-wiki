@@ -37,6 +37,22 @@ class ParseError(AppError):
     default_code = "PARSE_ERROR"
 
 
+class ExtractionStepError(AppError):
+    """One step of the extraction pipeline exhausted its retries.
+
+    Carries the step name and that step's metrics so the orchestrator can write
+    them straight into `ExtractionRun.step_metrics` without re-deriving them.
+    """
+
+    default_code = "EXTRACTION_STEP_FAILED"
+
+    def __init__(self, step: str, metrics: dict, cause: BaseException):
+        self.step = step
+        self.metrics = metrics
+        self.cause = cause
+        super().__init__(f"Step {step} failed after {metrics.get('attempts', 0)} attempt(s): {cause}")
+
+
 class PromptRenderError(AppError):
     """A prompt template is missing, has no active version, or lacks variables."""
 
