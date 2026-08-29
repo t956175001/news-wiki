@@ -142,4 +142,7 @@ cd frontend && npm run lint && npx vue-tsc --noEmit
 - **2026-08-29**：D4 完成。三步抽取管线（`apps/wiki/services/extract_pipeline.py`）+ 归一化（`normalize.py`）落地，三步全跑通并落库。全量 227 个测试通过（`tests/wiki/` 122 个，其中管线 39 个），ruff 与 `check-clean.sh` 全绿。
   **端到端实跑已验证**：118 篇真实文章入库，3 篇跑完整管线 → 14 实体 / 3 概念 / **12 关系** / 29 条 Evidence，每条都能回链到原文。
   **GLM key 余额为 0**（`code 1113`，付费模型全部 429），实跑是用免费的 `glm-4-flash` 完成的；充值后把 `GLM_MODEL` 改回 `glm-4.7` 即可，代码无需改动。
-  下一步执行 `docs/ROADMAP.md` 的 D5（每日简报 + cron 端点 + 限流熔断）。
+- **2026-08-29**：D5 完成。每日简报（`apps/brief/services/generate.py`，citations 一律由后端按 `used_indexes` 反查构造，不信 LLM 的引用元数据）、编排入口（`apps/ops/services/pipeline.py::run_daily`，ingest→extract→brief 三段写进同一个 run）、成本护栏（`apps/common/budget.py` + `throttling.py`）、cron 端点（`POST /api/v1/ops/cron/daily`）、手动抽取端点（`POST /api/v1/wiki/extract/`）全部落地。
+  **重构**：LLM 调用循环从 `extract_pipeline._invoke_json` 提到 `apps/common/llm/invoke.py::invoke_json`，抽取与简报共用，日预算熔断挂在这一个点上（见 ADR-013）。`SchemaError` 随之移到 `apps/common/exceptions.py`，validators 重新导出，调用方 import 不变。
+  全量 296 个测试通过（新增 69 个），ruff 与 `check-clean.sh` 全绿。cron 端点与限流的完成判据用 sqlite + runserver 实跑通过：无 token/错 token 均 403，对 token 返回 32 位 hex run_id（202），`/api/v1/wiki/extract/` 前 3 次 202、第 4 次 429 且返回中文文案。
+  下一步执行 `docs/ROADMAP.md` 的 D6（API 层 + OpenAPI）。

@@ -256,3 +256,36 @@ Caddy 同时服务前端静态产物和反代 `/api` 到 gunicorn，**前后端�
 - 但这本身是**产品思维和成本意识的展示点**，README 里要写
 
 **为什么不用"访客自带 API Key"**：转化率极低，几乎没人会为了看一个 demo 去掏自己的 key。预置数据的体验好得多。
+
+---
+
+## ADR-013：所有 LLM 调用收敛到 `invoke_json`，预算护栏挂在这一个点上
+
+**背景**
+D4 的三步抽取把「渲染 prompt → 调模型 → 解析 JSON → 校验 → 重试」这一整套逻辑写在
+`apps/wiki/services/extract_pipeline.py` 的私有函数 `_invoke_json` 里。D5 要加的每日简报
+需要同一套逻辑，同时日预算熔断要覆盖**所有**会花钱的调用。
+
+**决策**
+把这段逻辑提到 `apps/common/llm/invoke.py`：`invoke_json()` + `StepMeta`。
+抽取三步和简报都走它，`check_budget(trigger)` 在函数开头调用一次。
+`SchemaError` 随之从 `apps/wiki/services/validators.py` 移到 `apps/common/exceptions.py`
+（重试策略要认它，而 `apps/common` 不能反向依赖 `apps/wiki`），validators 里重新导出，
+调用方 import 路径不变。
+
+**理由**
+熔断如果按调用方一个个加，就有 N 个地方可能漏。收敛成一个入口后，
+「这个项目会不会偷偷花钱」这个问题只需要看一个函数。
+额外的好处是简报免费获得了和抽取相同的重试语义与 token 计费。
+
+**代价**
+- `apps/common` 依赖了 `apps.ops.models`（预算要读 `ExtractionRun.cost_cny` 汇总），
+  common 不再是零依赖的最底层。备选是把 budget 放进 ops，但 ROADMAP 指定了
+  `apps/common/budget.py`，且「花钱的护栏」放在共享层比放在观测 app 里更好找。
+- `SchemaError` 的定义位置和它的语义文档（在 validators 里）分开了两处。
+
+**顺带定下的两件小事**
+- `LLM_DAILY_BUDGET_CNY=0` 解释为「全部拦下」而不是「不限额」。两种误解里，
+  想省钱却被计费的人受的伤害更大。cron 仍然豁免。
+- 异步触发端点（`/ops/cron/daily`、`/wiki/extract/`）返回 **202 Accepted** 而非 200：
+  请求只是把任务排上了，真正的结果要轮询 `/ops/runs/{run_id}/` 才拿得到。
