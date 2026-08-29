@@ -52,6 +52,7 @@
 - [2026-08-28] 两个中文源（机器之心/量子位）目前依赖自建 RSSHub —— 官方 feed 不存在（`jiqizhixin.com/rss` 返回 HTML 页面），公共 rsshub.app 实例 403，D2 先用占位 URL 灌进去，采集失败会记在 `RssSource.last_error` 上
 - [2026-08-29] `scripts/check-clean.sh` 的禁用词是**子串**匹配，普通英文单词可能整词误报（D3 遇到一次，改了变量名绕开）—— 想过给词表条目加 `\b` 词边界，但放宽一个安全网需要先想清楚哪些词确实需要子串匹配，不适合顺手改
 - [2026-08-29] GLM-4.7 的官网价没查到确切数字（官网对旗舰模型按 prompt 长度分档，单一「元/千 token」表达不了）—— `pricing.py` 暂用上一代 GLM-4.6 的 ¥5/百万 作为默认值，靠 `LLM_PRICE_*` 环境变量覆盖；跑真实抽取前应核对一次
+  - **[2026-08-30 补]** 查到了：GLM-4.7 输入 2/3/4 元、输出 8/14/16 元每百万，按输入长度和输出长度分三档。表里现在的 `("0.005","0.005")` 两个方向都是错的。默认模型已换成 `glm-5.3-flash`（0.8/2.8，平价不分档），4.7 的错值优先级降低但仍是错的；要修就按最低档填 `("0.002","0.008")` 并在注释里写明高档位需要用 `LLM_PRICE_GLM_4_7` 覆盖
 - [2026-08-29] `validators.py` 里的 `_norm()` 与 D4 要写的 `normalize.py::normalize_name()` 是同一个公式，重复了一份 —— D4 落地 `normalize.py` 后应合并，D3 阶段不想为了复用先建一个只有一个函数的模块
 - [2026-08-29] 智谱把「余额不足」也返回 HTTP 429（body 里 `code: 1113`），和真正的限流同码，所以会被白白重试 3 次 —— 要区分只能解析 provider 的 body，那是把 GLM 的错误码耦合进客户端；等真的浪费到钱了再说
 - [2026-08-29] `uniq_linkage_triple` 在 DB 层其实拦不住重复：Postgres 的唯一约束把 NULL 视为互不相等，而 entity→entity 的边 `object_concept` 恒为 NULL —— 应用层的 `get_or_create` 挡住了（`IS NULL` 能匹配），但并发写入没有兜底。Django 5 的 `UniqueConstraint(nulls_distinct=False)` 能修，需要改 ARCHITECTURE 3.2 的字段契约 + 一次迁移

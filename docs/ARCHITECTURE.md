@@ -444,7 +444,7 @@ class LLMClient(Protocol):
 
 **与旧项目的关键差异**：`chat()` 必须返回 `LLMResult` 而不是裸 `str`。旧实现 `return response.choices[0].message.content` 丢掉了 usage，导致观测面板拿不到 token 数。新实现必须从 `response.usage` 读取 `prompt_tokens` / `completion_tokens` / `total_tokens`，缺失时填 0 而不是 None。
 
-**成本换算**（`apps/common/llm/pricing.py`）：价格表以 `dict[model_name, (input_per_1k, output_per_1k)]` 硬编码 + 环境变量可覆盖，单位人民币元。GLM-4.7 按官网价填，注释里写明「价格可能变动，以官网为准」。
+**成本换算**（`apps/common/llm/pricing.py`）：价格表以 `dict[model_name, (input_per_1k, output_per_1k)]` 硬编码 + 环境变量可覆盖（`LLM_PRICE_<MODEL>=<输入>,<输出>`），单位人民币元。按官网价填，注释里写明「价格可能变动，以官网为准」。限时促销价不进表——促销到期后会让成本记账悄悄少算。
 
 **限流**：`ratelimit.py` 令牌桶，进程内共享，`LLM_RATE_LIMIT_RPM` 控制。
 
@@ -473,7 +473,7 @@ class LLMClient(Protocol):
 | `ALLOWED_HOSTS` | `localhost,127.0.0.1` | 逗号分隔 |
 | `DATABASE_URL` | — | `postgres://user:pass@db:5432/newswiki` |
 | `GLM_API_KEY` | — | **必填** |
-| `GLM_MODEL` | `glm-4.7` | |
+| `GLM_MODEL` | `glm-5.3-flash` | 推理模型，思考关不掉。换成非推理模型时把 `LLM_TIMEOUT_SECONDS` 一起调回去 |
 | `GLM_BASE_URL` | `https://open.bigmodel.cn/api/paas/v4` | |
 | `LLM_RATE_LIMIT_RPM` | `60` | |
 | `LLM_TIMEOUT_SECONDS` | `300` | 单次请求超时（客户端自身重试之前）。推理模型一次要几分钟，跟着 `GLM_MODEL` 一起调 |

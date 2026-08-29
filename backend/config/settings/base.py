@@ -182,7 +182,7 @@ LOGGING = {
 # --- LLM (GLM only) -----------------------------------------------------
 
 GLM_API_KEY = os.environ.get("GLM_API_KEY", "")
-GLM_MODEL = os.environ.get("GLM_MODEL", "glm-4.7")
+GLM_MODEL = os.environ.get("GLM_MODEL", "glm-5.3-flash")
 GLM_BASE_URL = os.environ.get("GLM_BASE_URL", "https://open.bigmodel.cn/api/paas/v4")
 
 LLM_RATE_LIMIT_RPM = int(os.environ.get("LLM_RATE_LIMIT_RPM", "60"))
