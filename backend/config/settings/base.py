@@ -187,6 +187,9 @@ GLM_BASE_URL = os.environ.get("GLM_BASE_URL", "https://open.bigmodel.cn/api/paas
 
 LLM_RATE_LIMIT_RPM = int(os.environ.get("LLM_RATE_LIMIT_RPM", "60"))
 LLM_DAILY_BUDGET_CNY = float(os.environ.get("LLM_DAILY_BUDGET_CNY", "5.0"))
+# Per request, before the client's own retries. Reasoning models need minutes,
+# not seconds, so this belongs next to GLM_MODEL rather than in the code.
+LLM_TIMEOUT_SECONDS = float(os.environ.get("LLM_TIMEOUT_SECONDS", "300"))
 
 # --- Extraction pipeline ------------------------------------------------
 

@@ -34,6 +34,7 @@ def get_llm_client() -> LLMClient:
         api_key=settings.GLM_API_KEY,
         model=settings.GLM_MODEL,
         base_url=settings.GLM_BASE_URL,
+        timeout=settings.LLM_TIMEOUT_SECONDS,
     )
 
 

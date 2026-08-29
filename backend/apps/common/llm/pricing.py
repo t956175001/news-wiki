@@ -28,6 +28,12 @@ DEFAULT_PRICES: dict[str, tuple[str, str]] = {
     # page and override via env before quoting real costs to anyone.
     "glm-4.7": ("0.005", "0.005"),
     "glm-4.6": ("0.005", "0.005"),
+    # Listed at ¥0.8 / ¥2.8 per million tokens (2026-08-29). Flat, not tiered.
+    # There is a half-price promotion running for two weeks; the list price is
+    # what goes in the table, because a promotion that expires would quietly turn
+    # this number into an under-report. Set LLM_PRICE_GLM_5_3_FLASH to bill at
+    # the promotional rate while it lasts.
+    "glm-5.3-flash": ("0.0008", "0.0028"),
 }
 
 QUANTUM = Decimal("0.0001")  # matches decimal_places=4 on ExtractionRun.cost_cny

@@ -9,18 +9,23 @@ turn 3 attempts into 9 and make the recorded numbers a lie.
 import logging
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from openai import APIConnectionError, APIStatusError, OpenAI, OpenAIError
 from tenacity import RetryError, Retrying, stop_after_attempt, wait_exponential
 
-from apps.common.exceptions import LLMError
+from apps.common.exceptions import ContentFilteredError, LLMError
 
 from .client import LLMResult
 from .ratelimit import TokenBucket, get_bucket
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TIMEOUT = 120.0
+# Reasoning models spend most of a call thinking before the first token appears,
+# and GLM-5.3-Flash cannot be asked to stop (`thinking.type` only accepts
+# "enabled"). 120s was not enough for a three-article corpus; overridable via
+# `LLM_TIMEOUT_SECONDS` because the right value follows the model choice.
+DEFAULT_TIMEOUT = 300.0
 MAX_ATTEMPTS = 3
 
 # Everything this project asks the model for is structured extraction, where
@@ -32,6 +37,11 @@ DEFAULT_TEMPERATURE = 0.2
 # model) will fail identically on every attempt, so retrying only delays the
 # error and burns quota.
 RETRYABLE_STATUSES = frozenset({408, 409, 429})
+
+# GLM answers a safety refusal with HTTP 400 and this code in the body. It is a
+# policy decision rather than a fault: the same prompt is refused every time, so
+# callers need to tell it apart from an outage and stop instead of retrying.
+CONTENT_FILTER_CODE = "1301"
 
 _BACKOFF = wait_exponential(multiplier=1, min=1, max=20)
 
@@ -93,6 +103,67 @@ def _wait(retry_state) -> float:
     return _BACKOFF(retry_state)
 
 
+def _is_content_filtered(exc: APIStatusError) -> bool:
+    """Whether a 400 is the safety filter rather than a malformed request."""
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        if body.get("contentFilter"):
+            return True
+        error = body.get("error")
+        return isinstance(error, dict) and str(error.get("code")) == CONTENT_FILTER_CODE
+    # The SDK does not always hand back a parsed body; the message still quotes it.
+    text = str(exc)
+    return "contentFilter" in text or f"'{CONTENT_FILTER_CODE}'" in text
+
+
+@dataclass(frozen=True)
+class _Message:
+    content: str
+
+
+@dataclass(frozen=True)
+class _Choice:
+    message: _Message
+
+
+@dataclass(frozen=True)
+class _Completion:
+    """A consumed stream folded back into the non-streaming response shape.
+
+    Streaming exists here to keep the connection busy, not to show tokens as they
+    arrive — nothing downstream wants a partial answer. Rebuilding the whole
+    response means `_to_result` and every caller stay unaware of the difference.
+    """
+
+    choices: list
+    usage: object | None
+    model: str | None
+
+
+def _collapse_stream(chunks) -> _Completion:
+    """Drain a streamed completion into a single response.
+
+    Only `delta.content` is collected. Reasoning models also stream
+    `delta.reasoning_content`, which is the model thinking out loud on the way to
+    the answer — interesting, and not what was asked for.
+    """
+    parts: list[str] = []
+    usage = None
+    model = None
+
+    for chunk in chunks:
+        model = getattr(chunk, "model", None) or model
+        # Usage rides on the final chunk, which carries no choices.
+        if getattr(chunk, "usage", None) is not None:
+            usage = chunk.usage
+        for choice in getattr(chunk, "choices", None) or []:
+            piece = getattr(getattr(choice, "delta", None), "content", None)
+            if piece:
+                parts.append(piece)
+
+    return _Completion(choices=[_Choice(_Message("".join(parts)))], usage=usage, model=model)
+
+
 def _usage_value(usage: object, name: str) -> int:
     """Read one usage counter, tolerating objects, dicts and absence alike."""
     if usage is None:
@@ -115,11 +186,13 @@ class GLMClient:
         base_url: str,
         timeout: float = DEFAULT_TIMEOUT,
         max_attempts: int = MAX_ATTEMPTS,
+        stream: bool = True,
         bucket: TokenBucket | None = None,
         sleep: Callable[[float], None] = time.sleep,
     ):
         self.model = model
         self.max_attempts = max_attempts
+        self._stream = stream
         self._bucket = bucket if bucket is not None else get_bucket()
         self._client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout, max_retries=0)
         self._sleep = sleep
@@ -133,6 +206,14 @@ class GLMClient:
         run_id = str(opts.pop("run_id", "-"))
         model = str(opts.pop("model", None) or self.model)
         params = {"temperature": DEFAULT_TEMPERATURE, **opts}
+        if self._stream:
+            # A reasoning model can think for two minutes before emitting a
+            # token, and an idle connection that long gets dropped in between.
+            # Streaming keeps bytes moving; nothing here shows partial output.
+            params.setdefault("stream", True)
+            # Without this the final chunk carries no usage and every run would
+            # report zero tokens and zero cost.
+            params.setdefault("stream_options", {"include_usage": True})
 
         attempts = 0
 
@@ -141,7 +222,10 @@ class GLMClient:
             attempts += 1
             # Retries are real requests, so they pay for a token too.
             self._bucket.acquire()
-            return self._client.chat.completions.create(model=model, messages=messages, **params)
+            response = self._client.chat.completions.create(model=model, messages=messages, **params)
+            # Drained inside the retry, so a connection dropped mid-stream is
+            # just another failed attempt rather than a half-read answer.
+            return _collapse_stream(response) if params.get("stream") else response
 
         started = time.monotonic()
         try:
@@ -157,7 +241,10 @@ class GLMClient:
             )
             raise LLMError(f"LLM call failed after {attempts} attempts: {last}") from last
         except APIStatusError as exc:
-            # Not retryable — a bad key or a malformed request. Fail immediately.
+            # Not retryable — a bad key, a malformed request, or a refusal.
+            if _is_content_filtered(exc):
+                logger.error("run_id=%s LLM call to %s refused by the content filter", run_id, model)
+                raise ContentFilteredError(f"LLM refused to answer on safety grounds: {exc}") from exc
             logger.error(
                 "run_id=%s LLM call to %s rejected (HTTP %s): %s", run_id, model, exc.status_code, exc
             )

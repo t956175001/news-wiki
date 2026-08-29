@@ -476,6 +476,7 @@ class LLMClient(Protocol):
 | `GLM_MODEL` | `glm-4.7` | |
 | `GLM_BASE_URL` | `https://open.bigmodel.cn/api/paas/v4` | |
 | `LLM_RATE_LIMIT_RPM` | `60` | |
+| `LLM_TIMEOUT_SECONDS` | `300` | 单次请求超时（客户端自身重试之前）。推理模型一次要几分钟，跟着 `GLM_MODEL` 一起调 |
 | `LLM_DAILY_BUDGET_CNY` | `5.0` | 熔断阈值 |
 | `DEMO_MODE` | `true` | 开启后写操作走 IP 限流 |
 | `DEMO_WRITE_RATE` | `3/day` | DRF throttle 速率字符串 |

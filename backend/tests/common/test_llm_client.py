@@ -11,7 +11,7 @@ import httpx
 import pytest
 from openai import APIConnectionError, APIStatusError
 
-from apps.common.exceptions import LLMError
+from apps.common.exceptions import ContentFilteredError, LLMError
 from apps.common.llm import glm
 from apps.common.llm.glm import GLMClient
 from apps.common.llm.ratelimit import TokenBucket
@@ -82,6 +82,9 @@ def build(harness):
         # Rate limiting is exercised in test_ratelimit.py; an unthrottled bucket
         # keeps these tests from sleeping for real.
         kwargs.setdefault("bucket", TokenBucket(0))
+        # Most of these pin the plain request/response contract; the streaming
+        # path has its own section at the bottom.
+        kwargs.setdefault("stream", False)
         return GLMClient(
             api_key="test-key",
             model="glm-4.7",
@@ -288,3 +291,143 @@ def test_every_attempt_pays_the_rate_limiter(build, harness):
     client.chat([{"role": "user", "content": "hi"}])
 
     assert bucket._tokens == pytest.approx(58.0, abs=0.01)
+
+
+# --- content filter -----------------------------------------------------
+
+
+def _filtered_error(body=None):
+    """The 400 GLM returns when its safety filter blocks the answer."""
+    response = httpx.Response(400, request=_request())
+    if body is None:
+        body = {
+            "contentFilter": [{"level": 1, "role": "assistant"}],
+            "error": {"code": "1301", "message": "系统检测到输入或生成内容可能包含不安全或敏感内容"},
+        }
+    return APIStatusError("content filtered", response=response, body=body)
+
+
+def test_a_safety_refusal_is_not_an_ordinary_llm_error(build, harness):
+    """It has to be distinguishable: callers decide whether they can carry on."""
+    client = build([_filtered_error()])
+
+    with pytest.raises(ContentFilteredError):
+        client.chat([{"role": "user", "content": "hi"}])
+
+    assert len(harness.calls) == 1
+
+
+def test_a_safety_refusal_is_recognised_from_the_error_code_alone(build):
+    client = build([_filtered_error({"error": {"code": "1301", "message": "不安全"}})])
+
+    with pytest.raises(ContentFilteredError):
+        client.chat([{"role": "user", "content": "hi"}])
+
+
+def test_a_safety_refusal_is_recognised_when_the_body_was_not_parsed(build):
+    # The SDK hands back `body=None` often enough that reading only the parsed
+    # body would let a refusal through as a generic 400.
+    response = httpx.Response(400, request=_request())
+    error = APIStatusError(
+        "Error code: 400 - {'contentFilter': [{'level': 1}]}", response=response, body=None
+    )
+    client = build([error])
+
+    with pytest.raises(ContentFilteredError):
+        client.chat([{"role": "user", "content": "hi"}])
+
+
+def test_an_ordinary_bad_request_is_still_a_plain_llm_error(build):
+    client = build([_status_error(400)])
+
+    with pytest.raises(LLMError) as excinfo:
+        client.chat([{"role": "user", "content": "hi"}])
+
+    assert not isinstance(excinfo.value, ContentFilteredError)
+
+
+# --- streaming ----------------------------------------------------------
+
+
+def _chunk(content=None, *, usage=None, model="glm-5.3-flash", reasoning=None):
+    delta = SimpleNamespace(content=content, reasoning_content=reasoning)
+    choices = [] if content is None and reasoning is None else [SimpleNamespace(delta=delta)]
+    return SimpleNamespace(choices=choices, usage=usage, model=model)
+
+
+def _stream(*chunks):
+    return iter(chunks)
+
+
+def test_a_streamed_reply_is_reassembled(build, harness):
+    client = build(
+        [
+            _stream(
+                _chunk('{"entities"'),
+                _chunk(": []}"),
+                _chunk(usage=SimpleNamespace(prompt_tokens=2725, completion_tokens=4666, total_tokens=7391)),
+            )
+        ],
+        stream=True,
+    )
+
+    result = client.chat([{"role": "user", "content": "hi"}])
+
+    assert result["content"] == '{"entities": []}'
+    assert result["prompt_tokens"] == 2725
+    assert result["completion_tokens"] == 4666
+    assert result["model"] == "glm-5.3-flash"
+
+
+def test_streaming_asks_for_usage(build, harness):
+    """Without `include_usage` every streamed run would report zero cost."""
+    client = build([_stream(_chunk("{}"), _chunk(usage=None))], stream=True)
+
+    client.chat([{"role": "user", "content": "hi"}])
+
+    assert harness.calls[0]["stream"] is True
+    assert harness.calls[0]["stream_options"] == {"include_usage": True}
+
+
+def test_streamed_reasoning_is_not_part_of_the_answer(build):
+    """A reasoning model streams its thinking too; only the answer is wanted."""
+    client = build(
+        [_stream(_chunk(reasoning="先想一想……"), _chunk('{"ok": true}'), _chunk(reasoning="再想想"))],
+        stream=True,
+    )
+
+    result = client.chat([{"role": "user", "content": "hi"}])
+
+    assert result["content"] == '{"ok": true}'
+
+
+def test_a_stream_that_carries_no_answer_is_an_empty_completion(build):
+    client = build([_stream(_chunk(reasoning="只有思考，没有答案"))], stream=True)
+
+    with pytest.raises(LLMError, match="empty completion"):
+        client.chat([{"role": "user", "content": "hi"}])
+
+
+def test_a_connection_dropped_mid_stream_is_retried(build, harness):
+    def _broken():
+        yield _chunk('{"partial"')
+        raise APIConnectionError(request=_request())
+
+    client = build(
+        [_broken(), _stream(_chunk("{}"), _chunk(usage=None))],
+        stream=True,
+    )
+
+    result = client.chat([{"role": "user", "content": "hi"}])
+
+    # The half-read answer is discarded rather than returned as content.
+    assert result["content"] == "{}"
+    assert len(harness.calls) == 2
+
+
+def test_not_streaming_sends_no_stream_flag(build, harness):
+    client = build([_response()], stream=False)
+
+    client.chat([{"role": "user", "content": "hi"}])
+
+    assert "stream" not in harness.calls[0]
