@@ -138,5 +138,8 @@ cd frontend && npm run lint && npx vue-tsc --noEmit
 
 - **2026-08-28**：仓库初始化，文档就绪，尚无业务代码。下一步执行 `docs/ROADMAP.md` 的 D1。
 - **2026-08-29**：D1–D3 完成。工程基座、数据模型、RSS 采集管线、LLM 调用层（`apps/common/llm/`：GLMClient + 令牌桶 + 计价 + factory）、Prompt 服务、三个抽取校验器（`apps/wiki/services/validators.py`）均已落地，`tests/conftest.py` 提供 `mock_llm` fixture。全量 170 个测试通过，`ruff check` / `ruff format --check` / `scripts/check-clean.sh` 全绿。
-  下一步执行 `docs/ROADMAP.md` 的 D4（三步抽取管线）。
   **本机限制**：没装 Docker/Postgres，本地跑测试时用 `DATABASE_URL=sqlite:///...` 覆盖；CI 用的是 Postgres 16 service container，涉及 DB 行为的改动以 CI 结果为准。
+- **2026-08-29**：D4 完成。三步抽取管线（`apps/wiki/services/extract_pipeline.py`）+ 归一化（`normalize.py`）落地，三步全跑通并落库。全量 227 个测试通过（`tests/wiki/` 122 个，其中管线 39 个），ruff 与 `check-clean.sh` 全绿。
+  **端到端实跑已验证**：118 篇真实文章入库，3 篇跑完整管线 → 14 实体 / 3 概念 / **12 关系** / 29 条 Evidence，每条都能回链到原文。
+  **GLM key 余额为 0**（`code 1113`，付费模型全部 429），实跑是用免费的 `glm-4-flash` 完成的；充值后把 `GLM_MODEL` 改回 `glm-4.7` 即可，代码无需改动。
+  下一步执行 `docs/ROADMAP.md` 的 D5（每日简报 + cron 端点 + 限流熔断）。

@@ -53,3 +53,9 @@
 - [2026-08-29] `scripts/check-clean.sh` 的禁用词是**子串**匹配，普通英文单词可能整词误报（D3 遇到一次，改了变量名绕开）—— 想过给词表条目加 `\b` 词边界，但放宽一个安全网需要先想清楚哪些词确实需要子串匹配，不适合顺手改
 - [2026-08-29] GLM-4.7 的官网价没查到确切数字（官网对旗舰模型按 prompt 长度分档，单一「元/千 token」表达不了）—— `pricing.py` 暂用上一代 GLM-4.6 的 ¥5/百万 作为默认值，靠 `LLM_PRICE_*` 环境变量覆盖；跑真实抽取前应核对一次
 - [2026-08-29] `validators.py` 里的 `_norm()` 与 D4 要写的 `normalize.py::normalize_name()` 是同一个公式，重复了一份 —— D4 落地 `normalize.py` 后应合并，D3 阶段不想为了复用先建一个只有一个函数的模块
+- [2026-08-29] 智谱把「余额不足」也返回 HTTP 429（body 里 `code: 1113`），和真正的限流同码，所以会被白白重试 3 次 —— 要区分只能解析 provider 的 body，那是把 GLM 的错误码耦合进客户端；等真的浪费到钱了再说
+- [2026-08-29] `uniq_linkage_triple` 在 DB 层其实拦不住重复：Postgres 的唯一约束把 NULL 视为互不相等，而 entity→entity 的边 `object_concept` 恒为 NULL —— 应用层的 `get_or_create` 挡住了（`IS NULL` 能匹配），但并发写入没有兜底。Django 5 的 `UniqueConstraint(nulls_distinct=False)` 能修，需要改 ARCHITECTURE 3.2 的字段契约 + 一次迁移
+- [2026-08-29] `mention_count` 统计的是「被抽取到的次数」而不是「被提及的次数」：同一批文章重跑一次就 +1 —— 排序权重用它够了，但字段名有误导性
+- [2026-08-29] Evidence 不去重，重跑同一批文章会为同一句话再建一条 —— 这是有意的（每条记着自己的 `run_id` 和 `prompt_version`，是溯源数据不是状态），但词条页需要按 `run` 或 `snippet` 折叠展示，否则同一句话会重复列出
+- [2026-08-29] 价目表里没有 flash 系列（`glm-4-flash` / `glm-4.5-flash`），用它们跑时成本记 0 并打 warning —— 免费档记 0 其实是对的，但和「模型没登记」是同一条代码路径，分不出来
+- [2026-08-29] 免费的 `glm-4.5-flash` 是推理模型，3 篇文章的语料（约 2.6k prompt token）在 120s 超时内跑不完，三次重试全部超时 —— 换 `glm-4-flash` 可跑通（87s/次）。如果以后要用推理模型，超时和 `EXTRACT_BATCH_SIZE` 都得往下调
