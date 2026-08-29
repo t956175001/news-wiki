@@ -10,6 +10,7 @@ import pytest
 from django.utils import timezone
 
 from apps.brief.models import DailyBrief
+from apps.common.exceptions import ContentFilteredError
 from apps.ingest.models import RawArticle
 from apps.ops.models import ExtractionRun
 from apps.ops.services import pipeline as pipeline_module
@@ -288,6 +289,39 @@ def test_a_failed_briefs_tokens_are_still_billed(stub_ingest, mock_llm):
 
     assert run.step_metrics["brief"]["prompt_tokens"] == 1500
     assert run.step_metrics["brief"]["attempts"] == 3
+
+
+def test_a_brief_refused_by_the_content_filter_is_skipped_not_failed(stub_ingest, mock_llm):
+    """A refusal is not a fault, and no retry would change the answer.
+
+    The extraction underneath is already saved and every claim on the site stays
+    traceable; losing one day's prose should not colour the run partial. Seen for
+    real on 2026-08-29 against arXiv material, which is not remotely sensitive.
+    """
+    article = make_article(1)
+    mock_llm.push_json(entities_payload(article.pk))
+    mock_llm.push_json(concepts_payload(article.pk))
+    mock_llm.push_json(linkages_payload(article.pk))
+    mock_llm.push_error(ContentFilteredError("LLM refused to answer on safety grounds"))
+
+    run = daily(mock_llm)
+
+    assert run.step_metrics["brief"]["status"] == "skipped"
+    assert run.status == "success"
+    assert "brief:" not in run.error_message
+    assert Entity.objects.count() == 1
+
+
+def test_a_refused_brief_is_only_attempted_once(stub_ingest, mock_llm):
+    article = make_article(1)
+    mock_llm.push_json(entities_payload(article.pk))
+    mock_llm.push_json(concepts_payload(article.pk))
+    mock_llm.push_json(linkages_payload(article.pk))
+    mock_llm.push_error(ContentFilteredError("refused"))
+
+    daily(mock_llm)
+
+    assert mock_llm.call_count == 4
 
 
 def test_everything_failing_leaves_the_run_failed(monkeypatch, mock_llm):

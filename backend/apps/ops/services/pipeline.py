@@ -22,7 +22,7 @@ from collections.abc import Iterable, Sequence
 from django.utils import timezone
 
 from apps.brief.services.generate import STEP_BRIEF, generate_daily_brief
-from apps.common.exceptions import AppError, ExtractionStepError
+from apps.common.exceptions import AppError, ContentFilteredError, ExtractionStepError
 from apps.common.llm import LLMClient
 from apps.common.llm.invoke import StepMeta, ms_since
 from apps.ingest.fetchers.base import ArticleFetcher
@@ -135,12 +135,23 @@ def _brief_phase(
         _brief, meta = generate_daily_brief(date, run, client=client, trigger=trigger, sleep=sleep)
 
     except ExtractionStepError as exc:
+        spent = StepMeta.from_metrics(exc.metrics)
+        totals[STEP_BRIEF] = spent
+
+        if isinstance(exc.cause, ContentFilteredError):
+            # The provider read the day's news and declined to summarise it. The
+            # extraction it is built on is already saved and every claim on the
+            # site remains traceable; losing one day's prose is not worth marking
+            # the whole run failed, and no retry would change the answer.
+            logger.warning("run_id=%s brief refused by the content filter", run.run_id)
+            metrics = spent.as_dict() | {"status": "skipped", "reason": exc.detail}
+            _record_step(run, STEP_BRIEF, metrics)
+            return "skipped"
+
         # The model was asked and could not produce usable JSON. Its tokens were
         # still spent, so they go into the same accounting as everything else.
         errors.append(f"brief: {exc.detail}")
-        failed = StepMeta.from_metrics(exc.metrics)
-        totals[STEP_BRIEF] = failed
-        _record_step(run, STEP_BRIEF, failed.as_dict())
+        _record_step(run, STEP_BRIEF, spent.as_dict())
         return "failed"
 
     except AppError as exc:

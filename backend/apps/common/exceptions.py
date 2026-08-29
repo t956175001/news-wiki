@@ -31,6 +31,17 @@ class LLMError(AppError):
     default_code = "LLM_ERROR"
 
 
+class ContentFilteredError(LLMError):
+    """The provider refused to answer on safety grounds.
+
+    Split out from `LLMError` because it is a policy decision, not a fault: the
+    same prompt is refused every time, so retrying is pointless and callers that
+    can carry on without this particular answer should be able to tell.
+    """
+
+    default_code = "CONTENT_FILTERED"
+
+
 class ParseError(AppError):
     """Input could not be parsed into the expected shape."""
 

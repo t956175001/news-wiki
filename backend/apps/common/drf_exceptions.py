@@ -15,6 +15,9 @@ _CODE_TO_STATUS: dict[str, int] = {
     "APP_ERROR": status.HTTP_500_INTERNAL_SERVER_ERROR,
     "FETCH_ERROR": status.HTTP_502_BAD_GATEWAY,
     "LLM_ERROR": status.HTTP_502_BAD_GATEWAY,
+    # Upstream understood the request and declined it. Nothing is broken and a
+    # retry will not help, so it is not a 502.
+    "CONTENT_FILTERED": status.HTTP_422_UNPROCESSABLE_ENTITY,
     "PARSE_ERROR": status.HTTP_400_BAD_REQUEST,
     # Normally caught and recorded on the run; only reaches a view if a caller
     # runs a step outside the orchestrator. The upstream model is at fault.
