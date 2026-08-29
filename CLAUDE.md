@@ -146,3 +146,8 @@ cd frontend && npm run lint && npx vue-tsc --noEmit
   **重构**：LLM 调用循环从 `extract_pipeline._invoke_json` 提到 `apps/common/llm/invoke.py::invoke_json`，抽取与简报共用，日预算熔断挂在这一个点上（见 ADR-013）。`SchemaError` 随之移到 `apps/common/exceptions.py`，validators 重新导出，调用方 import 不变。
   全量 296 个测试通过（新增 69 个），ruff 与 `check-clean.sh` 全绿。cron 端点与限流的完成判据用 sqlite + runserver 实跑通过：无 token/错 token 均 403，对 token 返回 32 位 hex run_id（202），`/api/v1/wiki/extract/` 前 3 次 202、第 4 次 429 且返回中文文案。
   下一步执行 `docs/ROADMAP.md` 的 D6（API 层 + OpenAPI）。
+- **2026-08-29**：D6 完成。契约表里 20 条路径全部实现，OpenAPI 21 个 operation 每个都有 summary + description，`spectacular` 零 warning。
+  **词条详情**（`/api/v1/wiki/entities/{id}/`）严格按 ARCHITECTURE 4.1 输出，出边入边合并进一个 `linkages` 数组用 `direction` 区分，每条关系挂着 `evidences[]{snippet, prompt_key, prompt_version, run_id, article{...}}`；**固定 5 次查询**（实体 + 出边 + 出边证据 + 入边 + 入边证据），有 `django_assert_num_queries(5)` 卡着，加到 23 条关系仍是 5 次。
+  **图谱**按 4.2 输出，`symbolSize = min(60, 12 + value*2)` 后端算好，超 limit 按 Top-N 截断并置 `truncated`，categories 用模型 choices 顺序保证 ECharts 配色稳定。
+  全量 362 个测试通过（新增 66 个），ruff 与 `check-clean.sh` 全绿。所有端点用 sqlite + runserver 实跑验证过，证据结构无 null 字段。
+  下一步执行 `docs/ROADMAP.md` 的 D7（机动：补测试 + seed_demo）。
