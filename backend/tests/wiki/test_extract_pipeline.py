@@ -12,6 +12,7 @@ from decimal import Decimal
 import pytest
 from django.utils import timezone
 
+from apps.common.exceptions import LLMError
 from apps.common.llm.pricing import estimate_cost
 from apps.ingest.models import RawArticle
 from apps.ops.models import ExtractionRun
@@ -358,6 +359,50 @@ def test_a_missing_field_also_retries_and_then_fails(article, mock_llm):
 
     assert result.status == "failed"
     assert result.step_metrics["extract_entities"]["attempts"] == 3
+
+
+def test_a_transport_failure_is_not_retried_a_second_time(article, mock_llm):
+    """`LLMError` means the client already spent its own three attempts.
+
+    Retrying it here would either repeat a deterministic rejection — GLM answers
+    a content-filter block with HTTP 400, which fails identically every time — or
+    triple the bill during an outage. Measured on 2026-08-29: one such step took
+    nine upstream calls and ten minutes to give up.
+    """
+    mock_llm.push_error(LLMError("LLM call rejected with HTTP 400: content filter"))
+
+    result = run([article], mock_llm)
+
+    assert mock_llm.call_count == 1
+    assert result.status == "failed"
+    assert result.step_metrics["extract_entities"]["attempts"] == 1
+    assert "content filter" in result.step_metrics["extract_entities"]["error_message"]
+
+
+def test_a_transport_failure_still_closes_out_the_run(article, mock_llm):
+    """It has to arrive as a recorded step failure, not as an escaping exception.
+
+    An `LLMError` propagating out of the pipeline would leave the run stuck on
+    "running" forever, and the ops panel polls that field.
+    """
+    mock_llm.push_error(LLMError("Connection error"))
+
+    result = run([article], mock_llm)
+
+    assert result.status == "failed"
+    assert result.finished_at is not None
+    assert "Connection error" in result.error_message
+
+
+def test_a_transport_failure_mid_run_keeps_what_was_already_extracted(article, mock_llm):
+    mock_llm.push_json(_with_article(ENTITIES_PAYLOAD, article.pk))
+    mock_llm.push_error(LLMError("Connection error"))
+
+    result = run([article], mock_llm)
+
+    assert result.status == "partial"
+    assert Entity.objects.count() == 2
+    assert result.step_metrics["extract_concepts"]["status"] == "failed"
 
 
 def test_a_retry_that_succeeds_is_counted_but_does_not_fail_the_run(article, mock_llm):

@@ -183,24 +183,37 @@ def invoke_json(
         payload = loads(result["content"], prompt_key)
         return validate(payload) if validate is not None else payload
 
+    # Output quality only. `LLMError` is deliberately absent: the client owns
+    # transport and has already spent its own three attempts by the time it
+    # raises, so retrying here either repeats a deterministic rejection (a 400
+    # from the content filter fails identically every time) or triples the bill
+    # on an outage. Measured on 2026-08-29: a step that could not reach the
+    # provider took nine upstream calls and ten minutes to give up.
     retrying = Retrying(
-        retry=retry_if_exception_type((LLMError, SchemaError, json.JSONDecodeError)),
+        retry=retry_if_exception_type((SchemaError, json.JSONDecodeError)),
         wait=_BACKOFF,
         stop=stop_after_attempt(MAX_ATTEMPTS),
         sleep=sleep,
     )
 
-    try:
-        value = retrying(_attempt)
-    except RetryError as exc:
-        cause = exc.last_attempt.exception()
+    def _failed(cause: BaseException) -> ExtractionStepError:
         meta.status = "failed"
         meta.error_message = str(cause)
         meta.elapsed_ms = ms_since(started)
         logger.error(
             "run_id=%s step %s failed after %s attempt(s): %s", run_id, prompt_key, meta.attempts, cause
         )
-        raise ExtractionStepError(prompt_key, meta.as_dict(), cause) from cause
+        return ExtractionStepError(prompt_key, meta.as_dict(), cause)
+
+    try:
+        value = retrying(_attempt)
+    except RetryError as exc:
+        raise _failed(exc.last_attempt.exception()) from exc.last_attempt.exception()
+    except LLMError as exc:
+        # Not retried above, but still has to be reported as a failed step: an
+        # LLMError escaping raw would skip the metrics and leave the run stuck
+        # on "running" forever.
+        raise _failed(exc) from exc
 
     meta.elapsed_ms = ms_since(started)
     return value, meta
