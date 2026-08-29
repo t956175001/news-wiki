@@ -8,6 +8,7 @@ stops the sweep. Whatever went wrong is counted, logged, and written to
 import hashlib
 import logging
 import time
+from collections.abc import Iterable
 
 from django.db import IntegrityError
 from django.utils import timezone
@@ -134,8 +135,16 @@ def fetch_source(source: RssSource, article_fetcher: ArticleFetcher | None = Non
     return stats
 
 
-def fetch_all_enabled(article_fetcher: ArticleFetcher | None = None) -> dict:
-    """Sweep every enabled source. Returns the totals plus per-source detail."""
+def fetch_all_enabled(
+    article_fetcher: ArticleFetcher | None = None,
+    *,
+    source_ids: Iterable[int] | None = None,
+) -> dict:
+    """Sweep every enabled source. Returns the totals plus per-source detail.
+
+    `source_ids` narrows the sweep to specific sources — the daily job takes it
+    so one broken feed can be re-run on its own without re-fetching the rest.
+    """
     started = time.monotonic()
     fetcher = article_fetcher or HttpArticleFetcher()
     totals = {
@@ -147,7 +156,11 @@ def fetch_all_enabled(article_fetcher: ArticleFetcher | None = None) -> dict:
         "per_source": [],
     }
 
-    for source in RssSource.objects.filter(enabled=True):
+    sources = RssSource.objects.filter(enabled=True)
+    if source_ids is not None:
+        sources = sources.filter(pk__in=list(source_ids))
+
+    for source in sources:
         totals["sources"] += 1
         try:
             stats = fetch_source(source, article_fetcher=fetcher)
