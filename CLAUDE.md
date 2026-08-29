@@ -137,3 +137,6 @@ cd frontend && npm run lint && npx vue-tsc --noEmit
 ## 当前状态
 
 - **2026-08-28**：仓库初始化，文档就绪，尚无业务代码。下一步执行 `docs/ROADMAP.md` 的 D1。
+- **2026-08-29**：D1–D3 完成。工程基座、数据模型、RSS 采集管线、LLM 调用层（`apps/common/llm/`：GLMClient + 令牌桶 + 计价 + factory）、Prompt 服务、三个抽取校验器（`apps/wiki/services/validators.py`）均已落地，`tests/conftest.py` 提供 `mock_llm` fixture。全量 170 个测试通过，`ruff check` / `ruff format --check` / `scripts/check-clean.sh` 全绿。
+  下一步执行 `docs/ROADMAP.md` 的 D4（三步抽取管线）。
+  **本机限制**：没装 Docker/Postgres，本地跑测试时用 `DATABASE_URL=sqlite:///...` 覆盖；CI 用的是 Postgres 16 service container，涉及 DB 行为的改动以 CI 结果为准。
