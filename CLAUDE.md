@@ -151,3 +151,10 @@ cd frontend && npm run lint && npx vue-tsc --noEmit
   **图谱**按 4.2 输出，`symbolSize = min(60, 12 + value*2)` 后端算好，超 limit 按 Top-N 截断并置 `truncated`，categories 用模型 choices 顺序保证 ECharts 配色稳定。
   全量 362 个测试通过（新增 66 个），ruff 与 `check-clean.sh` 全绿。所有端点用 sqlite + runserver 实跑验证过，证据结构无 null 字段。
   下一步执行 `docs/ROADMAP.md` 的 D7（机动：补测试 + seed_demo）。
+- **2026-08-30**：切到 `glm-5.3-flash`（推理模型，`thinking` 关不掉），为此改了三处 LLM 层：
+  1. **流式**：`GLMClient` 默认 `stream=True` + `stream_options.include_usage`。非流式下长请求会在 ~145s 被上游掐断（`APIConnectionError`，不是超时），关系抽取因此从没成功过；流式后 221.8s 的调用一次就过。
+  2. **重试分类**：`invoke_json` 不再外层重试 `LLMError`——客户端已经用掉自己的 3 次，外层再来 3 次只会把确定性拒绝重复三遍。失败从 10 分钟缩到 30 秒-2 分钟。
+  3. **内容审查降级**：`ContentFilteredError`（HTTP 400 / code 1301）单独成类，简报被拒时记 `skipped` 而非 failed。
+  另：超时 120s→300s 且改成 `LLM_TIMEOUT_SECONDS` 可配（已补进 ARCHITECTURE §7）；价目表加 `glm-5.3-flash`。
+  **端到端实跑通过**：3 篇 arXiv → 13 实体 / 8 概念 / **16 关系** / 37 条 Evidence，37,003 token，0.0868 CNY；简报 3 条引用全部回链真实 URL。全量 377 个测试通过。
+  **实测记录**：语料大小不影响延迟（1 篇 102s / 3 篇 96s），思考链长度主导耗时，所以调小 `EXTRACT_BATCH_SIZE` 不提速，保持 5。本机代理（`127.0.0.1:7897`）对国内 API 是负作用，跑真实调用时要 `unset HTTP_PROXY HTTPS_PROXY`。
