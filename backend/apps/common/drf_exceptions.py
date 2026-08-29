@@ -20,9 +20,10 @@ _CODE_TO_STATUS: dict[str, int] = {
     # runs a step outside the orchestrator. The upstream model is at fault.
     "EXTRACTION_STEP_FAILED": status.HTTP_502_BAD_GATEWAY,
     "PROMPT_RENDER_ERROR": status.HTTP_500_INTERNAL_SERVER_ERROR,
-    # Asked to work on articles or a date that has none. Nothing is broken;
+    # Asked for something that has no data behind it yet. Nothing is broken;
     # there is simply nothing there.
     "NO_ARTICLES": status.HTTP_404_NOT_FOUND,
+    "NO_BRIEF": status.HTTP_404_NOT_FOUND,
     "RATE_LIMITED": status.HTTP_429_TOO_MANY_REQUESTS,
     # Not the caller's fault and not permanent — the daily cap resets tomorrow.
     "BUDGET_EXCEEDED": status.HTTP_503_SERVICE_UNAVAILABLE,
