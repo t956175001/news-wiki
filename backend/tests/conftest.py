@@ -9,6 +9,7 @@ import json
 from collections import deque
 
 import pytest
+from django.core.cache import cache
 
 from apps.common.llm import factory
 from apps.common.llm.client import LLMResult
@@ -111,3 +112,11 @@ def _fresh_rate_limit_bucket():
     reset_bucket()
     yield
     reset_bucket()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_throttle_history():
+    """DRF keeps throttle history in the cache, which outlives the test database."""
+    cache.clear()
+    yield
+    cache.clear()
