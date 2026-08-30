@@ -29,11 +29,17 @@ services:
         condition: service_healthy
     volumes:
       - frontend_dist:/app/frontend_dist
+    # All continuation lines below are kept at this same indentation on
+    # purpose: a YAML folded (>) scalar only joins lines with newline->space
+    # when their indentation matches the first line. Extra indentation (e.g.
+    # to visually align the gunicorn flags) makes YAML preserve a literal
+    # newline instead, which turns "--bind ..." into an unreached, separate
+    # shell statement and silently leaves gunicorn on its 127.0.0.1 default.
     command: >
       sh -c "python manage.py migrate --noinput &&
-             gunicorn config.wsgi:application
-             --bind 0.0.0.0:8000 --workers 3 --threads 2 --timeout 120
-             --access-logfile - --error-logfile -"
+      gunicorn config.wsgi:application --bind 0.0.0.0:8000
+      --workers 3 --threads 2 --timeout 120
+      --access-logfile - --error-logfile -"
 
   caddy:
     image: caddy:2-alpine
