@@ -158,3 +158,13 @@ cd frontend && npm run lint && npx vue-tsc --noEmit
   另：超时 120s→300s 且改成 `LLM_TIMEOUT_SECONDS` 可配（已补进 ARCHITECTURE §7）；价目表加 `glm-5.3-flash`。
   **端到端实跑通过**：3 篇 arXiv → 13 实体 / 8 概念 / **16 关系** / 37 条 Evidence，37,003 token，0.0868 CNY；简报 3 条引用全部回链真实 URL。全量 377 个测试通过。
   **实测记录**：语料大小不影响延迟（1 篇 102s / 3 篇 96s），思考链长度主导耗时，所以调小 `EXTRACT_BATCH_SIZE` 不提速，保持 5。本机代理（`127.0.0.1:7897`）对国内 API 是负作用，跑真实调用时要 `unset HTTP_PROXY HTTPS_PROXY`。
+- **2026-08-30**：D7 完成。全量 **486 个测试**通过（新增 109 个），`apps/` 覆盖率 99%，**所有 service 模块 100%**；ruff 与 `check-clean.sh` 全绿。
+  **补测试**：按 `--cov` 报告逐个补失败路径——后台线程（`background.py` 43%→100%）、采集去重竞态与 `source_ids` 收窄、编排的非 `NO_ARTICLES` 异常分支、简报校验的空标题/数字字符串序号、persist 里「过了校验但落库后找不到」的悬空引用、`_article_id` 的 bool/float 强制转换、坏模板渲染、trafilatura 解析崩溃、retry-after 为负数。
+  **顺带修了两个真 bug**：① `prompts/service.py::render` 里 `Formatter().parse()` 在 try 之外，模板括号不配对时漏出**裸 `ValueError`**（违反「不裸抛」规范，且会变成 500 而非带错误码的响应）；② `conftest.py` 的 `mock_llm` 只 patch 了 factory，而 `generate.py` / `extract_pipeline.py` 是 `from ... import get_llm_client` **在自己命名空间绑定**的，自己解析 client 的代码路径（`seed_demo`）会真发网络请求——写 `seed_demo` 测试时真打到了线上。现在 patch 三处绑定，另加一条 autouse 保险丝：谁构造真的 OpenAI client 就断言失败（`test_llm_factory.py` 用 `allow_openai_client` marker 豁免）。
+  **`seed_demo`**：`--from-fixture`（默认，1.2s loaddata，零 LLM 调用）/ `--live`（真跑，重建 fixture）。`--live` 里两个顺序上的坑：**先剪枝再写简报**（简报按日期取素材，会取到没抽取的文章，剪枝在后就会留下指向已删行的 citation），以及 **dumpdata 必须自己按 UTF-8 落盘**（`--output` 用系统 locale，中文 Windows 上会写出 GBK，CI 和服务器都读不了）。
+  **演示数据实跑**：332 篇入库 → 100 篇跑完整管线（10 个 run，每天 10 篇）→ **360 实体 / 219 概念 / 452 关系 / 1049 条 Evidence / 10 天简报**，1,196,020 token，**2.83 CNY**，约 2.5 小时。fixture 1.45 MB 已提交。
+  **质量核查**：Evidence 逐字回链原文 **1038/1049 = 99.0%**；实体名在所引文章中逐字出现 **351/360 = 97.5%**，9 个例外全部核过，是 LaTeX 归一化（`G$^2$D`→`G2D`、`X$^2$Localizer`）、枚举展开（`Qwen3-8B/14B/32B`→`Qwen3-14B`）、只出现在标题里（`MTE`）、姓氏补全（`Wittgenstein`→`Ludwig Wittgenstein`），**无编造**。23 条 fixture 质量断言写进 `tests/test_demo_fixture.py`，直接校验 JSON 产物本身（计数、引用完整性、逐字率、密钥扫描），CI 每次都跑。
+  **改了安全网**：`check-clean.sh` 的禁用词改为「拉丁词整词匹配 + 中文子串匹配」。某个 4 字母禁用词是 `capacity` 等普通英文的子串，在演示数据里误报 36 次、整词 0 次，fixture 提不进去。改完用临时探针验证过 5 个词的整词与点分形式仍会 FAIL。
+  **已知短板（未改，记进 BACKLOG）**：图谱默认 `limit=50` 只出 5 条边、41 个孤立点——不是抽取问题，是 ARCHITECTURE 4.2 规定按 `mention_count` 截断，而 360 个实体里 349 个 `mention_count=1`，度数最高的节点反被切掉（实测 limit=50/100/200/400 → 边 5/20/94/307）。改排序键要动 4.2 契约和 D6 的测试，留给 D10。
+  **演示数据的日期是回填的**：真实 feed 只有一天的量（317 篇里 309 篇同一天），`--spread-days 10` 把 100 篇重新摊到 10 天，所以**入库的 publish_time 与源站页面不一致**；URL/标题/正文/证据片段全是原样，溯源不受影响。这条在 D13 写 README 时要交代。
+  下一步执行 `docs/ROADMAP.md` 的 D8（前端脚手架 + 布局 + API 层）。
