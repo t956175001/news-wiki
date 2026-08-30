@@ -29,6 +29,13 @@ $teal-100: #dcebe9;
 $red-600: #b3432f;
 $red-100: #f6e0da;
 
+// status-only hues — distinct from $amber (reserved for the evidence accent)
+$orange-600: #c1701f;
+$orange-100: #f4e3cd;
+
+$blue-600: #3b6fa0;
+$blue-100: #dde8f1;
+
 // entity_type categorical palette (Entity.ENTITY_TYPES order, ARCHITECTURE 3.2)
 $cat-person: #8a5cb0;
 $cat-org: #2f6f6b;
@@ -64,6 +71,10 @@ $cat-other: #6b7078;
   --color-success-soft: #{$teal-100};
   --color-danger: #{$red-600};
   --color-danger-soft: #{$red-100};
+  --color-warning: #{$orange-600};
+  --color-warning-soft: #{$orange-100};
+  --color-info: #{$blue-600};
+  --color-info-soft: #{$blue-100};
 
   // entity type categories
   --color-cat-person: #{$cat-person};

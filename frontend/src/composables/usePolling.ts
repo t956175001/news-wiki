@@ -2,8 +2,11 @@ import { ref, onUnmounted, getCurrentInstance } from 'vue'
 
 export const TERMINAL_STATUSES = ['done', 'success', 'partial', 'failed'] as const
 
-export function usePolling(fetchFn: () => Promise<{ status: string }>, intervalMs = 2000) {
-  const data = ref<{ status: string } | null>(null)
+export function usePolling<T extends { status: string }>(
+  fetchFn: () => Promise<T>,
+  intervalMs = 2000,
+) {
+  const data = ref<T | null>(null)
   const isPolling = ref(false)
   let timerId: ReturnType<typeof setTimeout> | null = null
 
