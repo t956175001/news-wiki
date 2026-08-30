@@ -9,11 +9,15 @@ const mockChart = {
   on: vi.fn(),
 }
 
-vi.mock('echarts', () => ({
+vi.mock('echarts/core', () => ({
   init: vi.fn(() => mockChart),
+  use: vi.fn(),
 }))
+vi.mock('echarts/charts', () => ({ GraphChart: {} }))
+vi.mock('echarts/components', () => ({ TooltipComponent: {}, LegendComponent: {} }))
+vi.mock('echarts/renderers', () => ({ CanvasRenderer: {} }))
 
-import * as echarts from 'echarts'
+import * as echarts from 'echarts/core'
 import GraphChart from './GraphChart.vue'
 
 const sampleData: GraphData = {

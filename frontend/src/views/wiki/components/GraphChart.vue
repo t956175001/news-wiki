@@ -1,8 +1,13 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import * as echarts from 'echarts'
+import * as echarts from 'echarts/core'
+import { GraphChart as EChartsGraphChart } from 'echarts/charts'
+import { LegendComponent, TooltipComponent } from 'echarts/components'
+import { CanvasRenderer } from 'echarts/renderers'
 import type { EChartsOption } from 'echarts'
 import type { GraphData } from '@/types/wiki'
+
+echarts.use([EChartsGraphChart, TooltipComponent, LegendComponent, CanvasRenderer])
 
 const props = defineProps<{ data: GraphData }>()
 const emit = defineEmits<{ nodeClick: [id: string] }>()
