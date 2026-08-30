@@ -83,13 +83,24 @@ class FakeLLMClient:
         return self.calls[index]["messages"][-1]["content"]
 
 
+# Modules that do `from apps.common.llm import get_llm_client`, which binds the
+# function into their own namespace at import time. Patching the factory alone
+# leaves those bindings pointing at the real one — and a service that resolves
+# its own client (`seed_demo` does) would then dial out for real from a test.
+_CLIENT_BINDINGS = (
+    "apps.common.llm.get_llm_client",
+    "apps.brief.services.generate.get_llm_client",
+    "apps.wiki.services.extract_pipeline.get_llm_client",
+)
+
+
 @pytest.fixture
 def mock_llm(monkeypatch):
     """A `FakeLLMClient` that `get_llm_client()` also hands out.
 
     Services take an optional client argument, so most tests can just pass the
-    fixture straight in; the factory patch covers the paths that resolve the
-    client themselves.
+    fixture straight in; the patches cover the paths that resolve the client
+    themselves.
     """
     fake = FakeLLMClient()
 
@@ -99,11 +110,32 @@ def mock_llm(monkeypatch):
     real_get_client.cache_clear()
 
     monkeypatch.setattr(factory, "get_llm_client", lambda: fake)
-    monkeypatch.setattr("apps.common.llm.get_llm_client", lambda: fake)
+    for target in _CLIENT_BINDINGS:
+        monkeypatch.setattr(target, lambda: fake)
 
     yield fake
 
     real_get_client.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _no_real_llm_calls(monkeypatch, request):
+    """House rule, enforced: no test reaches the provider.
+
+    `test_llm_client.py` builds a real `GLMClient` against a fake SDK, so the
+    guard goes on the transport underneath it rather than on the client. Anything
+    else that gets as far as constructing an OpenAI client has escaped its mock.
+    """
+    if request.node.get_closest_marker("allow_openai_client"):
+        return
+
+    def _forbidden(*args, **kwargs):
+        raise AssertionError(
+            "A test tried to construct a real OpenAI client. Pass `client=mock_llm` "
+            "or patch the module's `get_llm_client` binding (see _CLIENT_BINDINGS)."
+        )
+
+    monkeypatch.setattr("apps.common.llm.glm.OpenAI", _forbidden)
 
 
 @pytest.fixture(autouse=True)

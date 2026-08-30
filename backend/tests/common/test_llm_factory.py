@@ -1,10 +1,17 @@
-"""Factory tests: one client per process, built from settings, loud when unconfigured."""
+"""Factory tests: one client per process, built from settings, loud when unconfigured.
+
+Building the client is the thing under test here, so these opt out of the
+suite-wide guard against constructing a real SDK client. Nothing in this module
+calls `chat()`, so nothing reaches the network.
+"""
 
 import pytest
 
 from apps.common.exceptions import LLMError
 from apps.common.llm.factory import get_llm_client, reset_llm_client
 from apps.common.llm.glm import GLMClient
+
+pytestmark = pytest.mark.allow_openai_client
 
 
 @pytest.fixture(autouse=True)
