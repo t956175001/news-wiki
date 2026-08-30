@@ -42,12 +42,37 @@ report() {   # report <name> <matches>
   fi
 }
 
+# 拉丁字母的词按「整词」匹配，其余（中文等）仍按子串匹配。
+#
+# 起因：某个 4 字母的禁用词是普通英文单词的子串，D7 灌完演示数据后在 arXiv 摘要里
+# （capacity 之类）误报 36 次，整词匹配则 0 次。一个天天误报的安全网等于没有安全网。
+# 边界用 [^A-Za-z0-9] 而不是 \b，所以 host.internal.example 这类点分名字照样命中；
+# 代价是刻意拼接（把禁用词嵌进更长的单词里）会漏，那是可接受的取舍。
+# 中文没有词边界，\b 对它无意义，所以按原样保留子串匹配。
+build_forbidden_pattern() {
+  local term parts=() ascii="" other=""
+  while IFS= read -r term; do
+    term="${term%"${term##*[![:space:]]}"}"      # 去掉行尾空白
+    [ -z "$term" ] && continue
+    if printf '%s' "$term" | LC_ALL=C grep -qE '^[A-Za-z0-9 ._-]+$'; then
+      ascii="${ascii:+$ascii|}$term"
+    else
+      other="${other:+$other|}$term"
+    fi
+  done < <(grep -v '^[[:space:]]*#' .forbidden-terms | grep -v '^[[:space:]]*$')
+
+  [ -n "$ascii" ] && parts+=("(^|[^A-Za-z0-9])($ascii)([^A-Za-z0-9]|\$)")
+  [ -n "$other" ] && parts+=("($other)")
+  local IFS='|'
+  printf '%s' "${parts[*]}"
+}
+
 echo "== 仓库卫生检查 =="
 printf '  范围：%d 个待提交文件\n\n' "${#FILES[@]}"
 
 # 1. 禁用词（前雇主标识等）
 if [ -f .forbidden-terms ]; then
-  PATTERN=$(grep -v '^\s*#' .forbidden-terms | grep -v '^\s*$' | paste -sd'|' -)
+  PATTERN=$(build_forbidden_pattern)
   if [ -n "$PATTERN" ]; then
     report "禁用词" "$(scan "$PATTERN")"
   else
