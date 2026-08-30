@@ -6,9 +6,14 @@
 .forbidden-terms
 
 docs
-frontend
 deploy
 scripts
+
+# frontend IS needed in the build context: the Dockerfile's frontend-builder
+# stage compiles it for the prod image. Its own build artifacts stay ignored
+# below (node_modules, dist).
+frontend/node_modules
+frontend/dist
 
 **/__pycache__
 **/*.py[cod]
