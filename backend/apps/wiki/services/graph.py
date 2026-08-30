@@ -37,11 +37,11 @@ def node_id(prefix: str, pk: int) -> str:
     return f"{prefix}{pk}"
 
 
-def _entity_nodes(entity_type: str | None) -> list[dict]:
+def _entity_nodes(entity_types: list[str] | None) -> list[dict]:
     """Entities with their relation degree, ranked by how often they are mentioned."""
     queryset = Entity.objects.all()
-    if entity_type:
-        queryset = queryset.filter(entity_type=entity_type)
+    if entity_types:
+        queryset = queryset.filter(entity_type__in=entity_types)
 
     queryset = queryset.annotate(
         degree=Count("outgoing_linkages", distinct=True) + Count("incoming_linkages", distinct=True)
@@ -61,11 +61,11 @@ def _entity_nodes(entity_type: str | None) -> list[dict]:
     ]
 
 
-def _concept_nodes(namespace: str | None) -> list[dict]:
+def _concept_nodes(namespaces: list[str] | None) -> list[dict]:
     """Concepts ranked by degree — they have no mention_count to rank by."""
     queryset = Concept.objects.all()
-    if namespace:
-        queryset = queryset.filter(namespace=namespace)
+    if namespaces:
+        queryset = queryset.filter(namespace__in=namespaces)
 
     queryset = queryset.annotate(degree=Count("linkages", distinct=True)).order_by("-degree", "name")
 
@@ -129,15 +129,17 @@ def _categories(nodes: Iterable[dict]) -> list[dict]:
 
 def build_graph(
     *,
-    entity_type: str | None = None,
-    namespace: str | None = None,
+    entity_type: list[str] | None = None,
+    namespace: list[str] | None = None,
     limit: int = DEFAULT_LIMIT,
 ) -> dict:
     """The whole graph payload in four queries, whatever the graph's size.
 
     Filters apply to their own kind of node: `entity_type` narrows the entities,
-    `namespace` narrows the concepts. Isolated nodes are kept — a filtered-in
-    entity with no relations is still a true answer to "what is there".
+    `namespace` narrows the concepts. Either accepts more than one value — the
+    frontend's filter panel is a multi-select — so a node passes if it matches
+    any value in the given list. Isolated nodes are kept — a filtered-in entity
+    with no relations is still a true answer to "what is there".
     """
     limit = max(1, min(limit, MAX_LIMIT))
 

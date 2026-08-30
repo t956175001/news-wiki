@@ -132,8 +132,12 @@ class GraphView(APIView):
             "节点总数超过 `limit` 时按提及次数取 Top-N，并置 `truncated=true`。"
         ),
         parameters=[
-            OpenApiParameter("entity_type", OpenApiTypes.STR, description="只保留该类型的实体节点。"),
-            OpenApiParameter("namespace", OpenApiTypes.STR, description="只保留该命名空间的概念节点。"),
+            OpenApiParameter(
+                "entity_type", OpenApiTypes.STR, description="只保留这些类型的实体节点，逗号分隔可传多个。"
+            ),
+            OpenApiParameter(
+                "namespace", OpenApiTypes.STR, description="只保留这些命名空间的概念节点，逗号分隔可传多个。"
+            ),
             OpenApiParameter("limit", OpenApiTypes.INT, description=f"节点数上限，默认 {DEFAULT_LIMIT}。"),
         ],
         responses={200: GraphSerializer},
@@ -141,11 +145,20 @@ class GraphView(APIView):
     def get(self, request: Request) -> Response:
         return Response(
             build_graph(
-                entity_type=request.query_params.get("entity_type") or None,
-                namespace=request.query_params.get("namespace") or None,
+                entity_type=_list_param(request, "entity_type"),
+                namespace=_list_param(request, "namespace"),
                 limit=_int_param(request, "limit", DEFAULT_LIMIT),
             )
         )
+
+
+def _list_param(request: Request, name: str) -> list[str] | None:
+    """A comma-separated query param, e.g. `entity_type=org,product`. Empty → None."""
+    raw = request.query_params.get(name)
+    if not raw:
+        return None
+    values = [item.strip() for item in raw.split(",") if item.strip()]
+    return values or None
 
 
 def _int_param(request: Request, name: str, default: int) -> int:

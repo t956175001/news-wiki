@@ -375,6 +375,25 @@ def test_the_graph_can_be_filtered_by_namespace(client, entry):
     assert "混合专家模型" not in {node["name"] for node in body["nodes"]}
 
 
+def test_the_graph_can_be_filtered_by_multiple_entity_types(client, entry):
+    body = client.get("/api/v1/wiki/graph/?entity_type=org,product").json()
+
+    names = {node["name"] for node in body["nodes"]}
+    assert "OpenAI" in names
+    assert "GPT-5" in names
+
+
+def test_the_graph_can_be_filtered_by_multiple_namespaces(client):
+    Concept.objects.create(name="A", namespace="technique")
+    Concept.objects.create(name="B", namespace="policy")
+    Concept.objects.create(name="C", namespace="trend")
+
+    body = client.get("/api/v1/wiki/graph/?namespace=technique,policy").json()
+
+    names = {node["name"] for node in body["nodes"]}
+    assert names == {"A", "B"}
+
+
 def test_categories_are_listed_in_a_stable_order(client, entry):
     first = client.get("/api/v1/wiki/graph/").json()["categories"]
     second = client.get("/api/v1/wiki/graph/").json()["categories"]
