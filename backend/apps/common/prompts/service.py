@@ -33,7 +33,14 @@ def render(key: str, ctx: dict) -> str:
     template = _active(key)
     text = template.current_version.text
 
-    missing = sorted(_placeholders(text) - ctx.keys())
+    try:
+        missing = sorted(_placeholders(text) - ctx.keys())
+    except ValueError as exc:
+        # `Formatter().parse` rejects an unbalanced brace before `format` ever
+        # sees it. Same class of prompt bug as below, and it must not leave this
+        # module as a bare ValueError.
+        raise PromptRenderError(f"Cannot parse prompt '{key}': {exc}") from exc
+
     if missing:
         raise PromptRenderError(f"Missing template variables for '{key}': {missing}")
 

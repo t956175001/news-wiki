@@ -61,6 +61,28 @@ def test_render_rejects_unknown_key():
         service.render("nope.missing", {})
 
 
+@pytest.mark.parametrize(
+    "text",
+    ["缺一个右括号 {name", "位置参数 {0}", "空占位 {}"],
+    ids=["unbalanced brace", "positional index", "anonymous field"],
+)
+def test_render_reports_a_broken_template_against_its_key(text):
+    """A malformed stored template is a prompt bug, not a caller bug.
+
+    The key goes in the message because the caller passed a perfectly good
+    context and has no other way to tell which of the four prompts is broken.
+    """
+    tpl = PromptTemplate.objects.create(key="test.broken", name="坏模板", default_text=text)
+    version = PromptVersion.objects.create(template=tpl, version_no=1, text=text, is_default=True)
+    tpl.current_version = version
+    tpl.save(update_fields=["current_version"])
+
+    with pytest.raises(PromptRenderError) as exc:
+        service.render("test.broken", {"name": "GPT-5"})
+
+    assert "test.broken" in exc.value.detail
+
+
 def test_render_rejects_template_without_active_version():
     PromptTemplate.objects.create(key="test.orphan", name="孤儿", default_text="x")
 
