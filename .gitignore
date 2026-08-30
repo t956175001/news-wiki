@@ -59,3 +59,4 @@ docker-compose.override.yml
 *.log
 tmp/
 .claude/settings.local.json
+.playwright-mcp/
