@@ -1,3 +1,15 @@
+# --- 前端构建 ---
+# Only used by the prod compose (deploy/docker-compose.prod.yml), which mounts
+# /app/frontend_dist into Caddy. The dev compose (docker-compose.yml) runs
+# `vite dev` on the host instead and never triggers this stage.
+FROM node:20-alpine AS frontend-builder
+WORKDIR /app
+COPY frontend/package*.json ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
+
+# --- 后端运行 ---
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -16,6 +28,7 @@ COPY backend/requirements.txt ./backend/requirements.txt
 RUN pip install -r backend/requirements.txt
 
 COPY backend ./backend
+COPY --from=frontend-builder /app/dist ./frontend_dist
 
 WORKDIR /app/backend
 

@@ -1,0 +1,32 @@
+{$SITE_DOMAIN} {
+    encode gzip zstd
+
+    # API 反代到 gunicorn
+    handle /api/* {
+        reverse_proxy web:8000
+    }
+    handle /admin/* {
+        reverse_proxy web:8000
+    }
+    handle /static/* {
+        reverse_proxy web:8000
+    }
+
+    # 其余交给前端 SPA
+    handle {
+        root * /srv/frontend
+        try_files {path} /index.html
+        file_server
+    }
+
+    header {
+        X-Content-Type-Options nosniff
+        X-Frame-Options DENY
+        Referrer-Policy strict-origin-when-cross-origin
+        -Server
+    }
+
+    log {
+        output file /var/log/caddy/access.log
+    }
+}

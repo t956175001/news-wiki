@@ -1,0 +1,60 @@
+# Production stack. Static files are baked into the web image at build time
+# (whitenoise serves them from inside the web container; Caddy only proxies
+# /static/* to web, it never reads the files itself), so there is no shared
+# static volume here — only frontend_dist, which Caddy DOES need to serve
+# directly since it has no other way to reach the SPA build output.
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      retries: 5
+
+  web:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: ../.env
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - frontend_dist:/app/frontend_dist
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+             gunicorn config.wsgi:application
+             --bind 0.0.0.0:8000 --workers 3 --threads 2 --timeout 120
+             --access-logfile - --error-logfile -"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      SITE_DOMAIN: ${SITE_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - frontend_dist:/srv/frontend:ro
+      - caddy_data:/data
+      - caddy_config:/config
+      - caddy_logs:/var/log/caddy
+    depends_on:
+      - web
+
+volumes:
+  pgdata:
+  frontend_dist:
+  caddy_data:
+  caddy_config:
+  caddy_logs:
