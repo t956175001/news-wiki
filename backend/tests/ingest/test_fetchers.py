@@ -5,6 +5,8 @@ is faked, so a change in extraction behaviour will actually show up here.
 """
 
 import datetime as dt
+import json
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -183,3 +185,103 @@ def test_fetch_feed_returns_empty_list_for_a_feed_with_no_items(httpx_mock):
     httpx_mock.add_response(url=FEED_URL, text=empty)
 
     assert fetch_feed(FEED_URL) == []
+
+
+def test_an_unparseable_pubdate_leaves_the_entry_undated(httpx_mock):
+    """A bad date costs the date, not the article."""
+    feed = FEED_XML.replace(
+        "<pubDate>Thu, 27 Aug 2026 10:00:00 GMT</pubDate>",
+        "<pubDate>下周三下午</pubDate>",
+    )
+    httpx_mock.add_response(url=FEED_URL, text=feed)
+
+    entries = fetch_feed(FEED_URL)
+
+    assert entries[0].url == "https://example.com/news/gpt5"
+    assert entries[0].publish_time is None
+
+
+@pytest.mark.parametrize(
+    "struct",
+    [(2026, 13, 32, 25, 61, 61, 0, 0, 0), ("2026", "08", "27", 0, 0, 0, 0, 0, 0)],
+    ids=["out of range", "strings"],
+)
+def test_a_nonsensical_parsed_date_leaves_the_entry_undated(httpx_mock, monkeypatch, struct):
+    """feedparser can hand back a `struct_time` that `datetime` refuses.
+
+    Month 13 exists in the wild. The article is still worth ingesting — the
+    brief dates an undated article by `fetched_at` instead.
+    """
+    httpx_mock.add_response(url=FEED_URL, text=FEED_XML)
+    parsed = SimpleNamespace(
+        entries=[{"link": "https://example.com/news/gpt5", "title": "t", "published_parsed": struct}],
+        bozo=False,
+    )
+    monkeypatch.setattr("apps.ingest.fetchers.rss.feedparser.parse", lambda payload: parsed)
+
+    entries = fetch_feed(FEED_URL)
+
+    assert entries[0].publish_time is None
+
+
+# --- article fetcher: parsing failures -----------------------------------
+
+
+def test_article_fetcher_reports_a_parser_crash_as_a_fetch_error(httpx_mock, monkeypatch):
+    httpx_mock.add_response(url=ARTICLE_URL, html=ARTICLE_HTML)
+
+    def _explode(*args, **kwargs):
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr("apps.ingest.fetchers.article.trafilatura.extract", _explode)
+
+    # trafilatura raises assorted parser errors on malformed markup. One bad
+    # page must arrive at `fetch_source` as a FetchError like any other, or the
+    # sweep's per-article isolation does not apply to it.
+    with pytest.raises(FetchError) as excinfo:
+        HttpArticleFetcher().fetch(ARTICLE_URL)
+
+    assert "could not be parsed" in str(excinfo.value)
+
+
+def test_article_fetcher_reports_unreadable_extraction_output(httpx_mock, monkeypatch):
+    httpx_mock.add_response(url=ARTICLE_URL, html=ARTICLE_HTML)
+    monkeypatch.setattr(
+        "apps.ingest.fetchers.article.trafilatura.extract",
+        lambda *args, **kwargs: "{not json",
+    )
+
+    with pytest.raises(FetchError) as excinfo:
+        HttpArticleFetcher().fetch(ARTICLE_URL)
+
+    assert "unreadable extraction output" in str(excinfo.value)
+
+
+def test_article_fetcher_rejects_a_page_whose_body_is_only_whitespace(httpx_mock, monkeypatch):
+    httpx_mock.add_response(url=ARTICLE_URL, html=ARTICLE_HTML)
+    monkeypatch.setattr(
+        "apps.ingest.fetchers.article.trafilatura.extract",
+        lambda *args, **kwargs: '{"text": "   \\n  ", "title": "t"}',
+    )
+
+    # An article of pure whitespace would reach the corpus as a blank block and
+    # cost a model call to say nothing.
+    with pytest.raises(FetchError) as excinfo:
+        HttpArticleFetcher().fetch(ARTICLE_URL)
+
+    assert "main content" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("value", ["", None, "not a date at all", "2026-13-45T99:99:99"])
+def test_an_unparseable_article_date_is_dropped_not_fatal(httpx_mock, monkeypatch, value):
+    httpx_mock.add_response(url=ARTICLE_URL, html=ARTICLE_HTML)
+    payload = json.dumps({"text": "正文足够长，可以入库。", "title": "标题", "date": value})
+    monkeypatch.setattr(
+        "apps.ingest.fetchers.article.trafilatura.extract",
+        lambda *args, **kwargs: payload,
+    )
+
+    fetched = HttpArticleFetcher().fetch(ARTICLE_URL)
+
+    assert fetched.publish_time is None
+    assert fetched.content == "正文足够长，可以入库。"

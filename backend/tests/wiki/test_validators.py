@@ -306,6 +306,31 @@ def test_a_numeric_string_article_id_is_accepted():
     assert stats["skipped_invalid_article_ids"] == 0
 
 
+def test_a_whole_number_float_article_id_is_accepted():
+    items, stats = validate_entities(entities(entity(raw_article_id=42.0)), ARTICLE_IDS)
+
+    # JSON has one number type, so a model that writes `42.0` still means 42.
+    assert items[0]["raw_article_id"] == 42
+    assert stats["skipped_invalid_article_ids"] == 0
+
+
+@pytest.mark.parametrize(
+    "value",
+    [42.5, True, False, [42], {"id": 42}],
+    ids=["fractional", "true", "false", "list", "object"],
+)
+def test_an_article_id_that_is_not_a_whole_number_is_skipped(value):
+    """Skipped, not raised: whatever it is, it is not one of this batch's ids.
+
+    `isinstance(True, int)` is True in Python, so booleans need the explicit
+    check — otherwise `raw_article_id: true` would silently cite article 1.
+    """
+    items, stats = validate_entities(entities(entity(raw_article_id=value)), ARTICLE_IDS)
+
+    assert items == []
+    assert stats["skipped_invalid_article_ids"] == 1
+
+
 def test_a_concept_citing_an_unknown_article_is_skipped():
     items, stats = validate_concepts(concepts(concept(raw_article_id=999)), ARTICLE_IDS)
 

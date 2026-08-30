@@ -10,7 +10,7 @@ import pytest
 from django.utils import timezone
 
 from apps.brief.models import DailyBrief
-from apps.common.exceptions import ContentFilteredError
+from apps.common.exceptions import AppError, ContentFilteredError
 from apps.ingest.models import RawArticle
 from apps.ops.models import ExtractionRun
 from apps.ops.services import pipeline as pipeline_module
@@ -375,3 +375,55 @@ def test_a_backlog_is_capped_per_run(stub_ingest, mock_llm, settings):
 
     assert run.articles_in == MAX_ARTICLES_PER_RUN
     assert RawArticle.objects.filter(extract_status="pending").count() == 5
+
+
+def test_per_article_ingest_failures_reach_the_panel_without_failing_the_step(monkeypatch, mock_llm):
+    article = make_article(1)
+    script_full_day(mock_llm, article.pk)
+
+    def _partly_broken(article_fetcher=None, source_ids=None):
+        return dict(INGEST_TOTALS) | {"failed": 3}
+
+    monkeypatch.setattr(pipeline_module, "fetch_all_enabled", _partly_broken)
+
+    run = daily(mock_llm)
+
+    # Three unreadable pages out of twelve is a normal day for a web crawler.
+    # The sweep already logged them; the step is still "done" and the run is
+    # still a success, but the count belongs on the panel.
+    assert run.status == "success"
+    assert run.step_metrics["ingest"]["status"] == "done"
+    assert run.step_metrics["ingest"]["failed"] == 3
+
+
+def test_a_clean_sweep_carries_no_failure_count(stub_ingest, mock_llm):
+    article = make_article(1)
+    script_full_day(mock_llm, article.pk)
+
+    run = daily(mock_llm)
+
+    assert "failed" not in run.step_metrics["ingest"]
+
+
+def test_a_brief_failing_for_a_reason_other_than_an_empty_day_fails_the_step(
+    stub_ingest, mock_llm, monkeypatch
+):
+    article = make_article(1)
+    mock_llm.push_json(entities_payload(article.pk))
+    mock_llm.push_json(concepts_payload(article.pk))
+    mock_llm.push_json(linkages_payload(article.pk))
+
+    def _boom(*args, **kwargs):
+        raise AppError("prompt brief.daily 没有可用版本", code="PROMPT_RENDER_ERROR")
+
+    monkeypatch.setattr(pipeline_module, "generate_daily_brief", _boom)
+
+    run = daily(mock_llm)
+
+    # `NO_ARTICLES` is the one AppError that means "nothing to do". Every other
+    # one is a real fault and must not be quietly filed as "skipped".
+    assert run.status == "partial"
+    assert run.step_metrics["brief"]["status"] == "failed"
+    assert "没有可用版本" in run.step_metrics["brief"]["error_message"]
+    assert "brief:" in run.error_message
+    assert Entity.objects.count() == 1

@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from openai import APIConnectionError, APIStatusError
+from openai import APIConnectionError, APIStatusError, OpenAIError
 
 from apps.common.exceptions import ContentFilteredError, LLMError
 from apps.common.llm import glm
@@ -268,6 +268,40 @@ def test_chat_does_not_retry_a_malformed_request(build, harness):
         client.chat([{"role": "user", "content": "hi"}])
 
     assert len(harness.calls) == 1
+
+
+def test_a_negative_retry_after_falls_back_to_backoff(build, harness):
+    client = build([_status_error(429, {"retry-after": "-5"}), _response()])
+
+    client.chat([{"role": "user", "content": "hi"}])
+
+    # Honouring it literally would mean not waiting at all, which is how a 429
+    # turns into three 429s.
+    assert harness.slept and harness.slept[0] > 0
+
+
+def test_a_429_with_no_headers_at_all_still_backs_off(build, harness):
+    headerless = _status_error(429)
+    # A gateway can reject a request before the SDK has a parsed response to
+    # read a header off. The backoff still has to happen.
+    headerless.response = SimpleNamespace(status_code=429)
+    client = build([headerless, _response()])
+
+    client.chat([{"role": "user", "content": "hi"}])
+
+    assert harness.slept and harness.slept[0] > 0
+
+
+def test_an_sdk_error_that_is_neither_transport_nor_status_is_not_retried(build, harness):
+    client = build([OpenAIError("the SDK could not build the request")])
+
+    with pytest.raises(LLMError) as exc:
+        client.chat([{"role": "user", "content": "hi"}])
+
+    # No status code means no way to tell whether a retry could help, and the
+    # provider's exception types must not escape this module either way.
+    assert len(harness.calls) == 1
+    assert "could not build the request" in exc.value.detail
 
 
 def test_chat_rejects_an_empty_completion(build):

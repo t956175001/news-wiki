@@ -5,8 +5,10 @@ the article fetcher is a stub.
 """
 
 import datetime as dt
+from unittest import mock
 
 import pytest
+from django.db import IntegrityError
 
 from apps.common.exceptions import FetchError
 from apps.ingest.fetchers.base import FetchedArticle
@@ -294,3 +296,73 @@ def test_one_broken_source_does_not_stop_the_sweep(db, monkeypatch):
     assert totals["sources"] == 2
     assert totals["saved"] == 1
     assert RssSource.objects.get(name="坏源").last_error == "连接超时"
+
+
+def test_a_source_raising_an_unexpected_error_is_contained(db, monkeypatch):
+    RssSource.objects.create(name="怪源", url="https://weird.example.com/feed.xml")
+    RssSource.objects.create(name="好源", url="https://good.example.com/feed.xml")
+
+    def fake_fetch_feed(url: str, timeout: float = 20.0) -> list[FeedEntry]:
+        if url.startswith("https://weird."):
+            # Not a FetchError — the kind of thing a parser bug produces, which
+            # the per-source `except FetchError` upstream would let through.
+            raise MemoryError("feed 太大")
+        return [make_entry(1)]
+
+    monkeypatch.setattr(ingest_service, "fetch_feed", fake_fetch_feed)
+
+    totals = fetch_all_enabled(article_fetcher=StubFetcher())
+
+    assert totals["sources"] == 2
+    assert totals["saved"] == 1
+    broken = next(stat for stat in totals["per_source"] if stat["source"] == "怪源")
+    assert broken["error"] == "feed 太大"
+    assert "MemoryError" in RssSource.objects.get(name="怪源").last_error
+
+
+def test_source_ids_narrow_the_sweep(db, feed):
+    wanted = RssSource.objects.create(name="要跑的", url="https://a.example.com/feed.xml")
+    RssSource.objects.create(name="不跑的", url="https://b.example.com/feed.xml")
+    feed([make_entry(1)])
+
+    # The daily job passes this so one broken feed can be re-run on its own
+    # without paying to re-fetch every other source.
+    totals = fetch_all_enabled(article_fetcher=StubFetcher(), source_ids=[wanted.pk])
+
+    assert totals["sources"] == 1
+    assert [stat["source"] for stat in totals["per_source"]] == ["要跑的"]
+
+
+def test_source_ids_still_exclude_disabled_sources(db, feed):
+    disabled = RssSource.objects.create(name="停用", url="https://a.example.com/f.xml", enabled=False)
+    feed([make_entry(1)])
+
+    totals = fetch_all_enabled(article_fetcher=StubFetcher(), source_ids=[disabled.pk])
+
+    assert totals["sources"] == 0
+    assert RawArticle.objects.count() == 0
+
+
+def test_an_article_inserted_by_a_concurrent_pass_counts_as_deduped(source, feed):
+    """Two passes can pass the existence check before either writes.
+
+    The DB constraint settles it; `fetch_source` has to read that as "already
+    had it" rather than as a failure, or a concurrent run would show up on the
+    ops panel as a broken feed.
+    """
+    entry = make_entry(1)
+    feed([entry])
+
+    real_create = RawArticle.objects.create
+
+    def create_then_collide(**kwargs):
+        real_create(**kwargs)
+        raise IntegrityError("duplicate key value violates unique constraint")
+
+    with mock.patch.object(RawArticle.objects, "create", side_effect=create_then_collide):
+        stats = fetch_source(source, article_fetcher=StubFetcher())
+
+    assert stats["saved"] == 0
+    assert stats["deduped"] == 1
+    assert stats["failed"] == 0
+    assert RssSource.objects.get(pk=source.pk).last_error == ""

@@ -337,3 +337,50 @@ def test_used_indexes_must_be_an_array(mock_llm):
 
     with pytest.raises(ExtractionStepError, match="used_indexes"):
         generate(mock_llm)
+
+
+def test_a_json_array_at_the_top_level_is_rejected(mock_llm):
+    make_article(1)
+    for _ in range(3):
+        mock_llm.push_json([brief_payload()])
+
+    with pytest.raises(ExtractionStepError, match="top level"):
+        generate(mock_llm)
+
+
+@pytest.mark.parametrize("field", ["title", "content_md"])
+@pytest.mark.parametrize("blank", ["", "   \n  "], ids=["empty", "whitespace"])
+def test_a_blank_title_or_body_is_rejected(mock_llm, field, blank):
+    make_article(1)
+    broken = brief_payload()
+    broken[field] = blank
+    for _ in range(3):
+        mock_llm.push_json(broken)
+
+    # A brief that renders as an empty page is not a brief; the retry costs less
+    # than a blank homepage.
+    with pytest.raises(ExtractionStepError, match="must not be empty"):
+        generate(mock_llm)
+
+
+def test_a_numeric_string_index_still_resolves_to_its_article(mock_llm):
+    article = make_article(1)
+    mock_llm.push_json(brief_payload(used_indexes=["1"]))
+
+    brief, _meta = generate(mock_llm)
+
+    # Models emit `["1"]` often enough that dropping the citation over a pair of
+    # quotes would cost real sources.
+    assert [citation["raw_article_id"] for citation in brief.citations] == [article.pk]
+
+
+def test_a_boolean_index_is_not_read_as_a_number(mock_llm, caplog):
+    make_article(1)
+    mock_llm.push_json(brief_payload(used_indexes=[True]))
+
+    with caplog.at_level(logging.WARNING):
+        brief, _meta = generate(mock_llm)
+
+    # `isinstance(True, int)` is True in Python, and `[true]` is not source 1.
+    assert brief.citations == []
+    assert "not a source number" in caplog.text

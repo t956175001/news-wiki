@@ -21,7 +21,9 @@ from apps.wiki.services.extract_pipeline import (
     PROMPT_LINKAGES,
     SNAPSHOT_PROMPT_KEYS,
     build_corpus,
+    persist,
     run_extraction,
+    start_run,
 )
 
 pytestmark = pytest.mark.django_db
@@ -688,3 +690,145 @@ def test_a_fenced_json_reply_is_still_accepted(article, mock_llm):
     assert result.status == "success"
     assert result.step_metrics["extract_entities"]["attempts"] == 1
     assert Entity.objects.count() == 2
+
+
+def test_an_article_with_no_publish_time_is_seen_when_the_run_saw_it(mock_llm):
+    undated = make_article(7, publish_time=None)
+    before = timezone.now()
+    script_success(mock_llm, undated.pk)
+
+    run([undated], mock_llm)
+
+    entity = Entity.objects.get(normalized_name="openai")
+    # No publish date is not "no date" — an entity with a null `first_seen_at`
+    # would drop out of every timeline on the site.
+    assert entity.first_seen_at is not None
+    assert entity.first_seen_at >= before
+
+
+def test_a_repeat_linkage_is_upgraded_when_the_evidence_is_stronger(article, mock_llm):
+    weaker = {"linkages": [{**LINKAGES_PAYLOAD["linkages"][0], "confidence": 0.4}]}
+    script_success(mock_llm, article.pk, linkages=weaker)
+    run([article], mock_llm)
+
+    script_success(mock_llm, article.pk)  # the same relation at 0.92
+    run([article], mock_llm)
+
+    # The mirror of `test_a_repeat_linkage_keeps_the_higher_confidence`: seeing
+    # the same claim again should raise confidence, never lower it.
+    assert Linkage.objects.count() == 2
+    assert Linkage.objects.get(object_entity__isnull=False).confidence == 0.92
+
+
+# --- persist: references that survived validation but cannot be resolved -
+
+
+def _entity_item(name: str, article_id: int, entity_type: str = "org") -> dict:
+    return {
+        "name": name,
+        "type": entity_type,
+        "aliases": [],
+        "summary": "",
+        "confidence": 0.9,
+        "evidence": "",
+        "raw_article_id": article_id,
+    }
+
+
+def _linkage_item(subject: str, obj: str, article_id: int, object_type: str = "entity") -> dict:
+    return {
+        "subject": subject,
+        "predicate": "发布",
+        "object_type": object_type,
+        "object": obj,
+        "confidence": 0.8,
+        "evidence": "",
+        "raw_article_id": article_id,
+    }
+
+
+def test_a_linkage_whose_subject_never_persisted_is_skipped_and_counted(article):
+    """`persist` re-checks what the validator already checked.
+
+    The validator drops names outside the candidate sets, so reaching this
+    branch means an item was accepted upstream and then failed to persist. An
+    edge with a missing endpoint would render as an edge to nowhere, so persist
+    drops it rather than trusting the earlier check.
+    """
+    run_row = start_run("manual")
+
+    counts = persist(
+        run_row,
+        [article],
+        [_entity_item("GPT-5", article.pk, "model")],
+        [],
+        [_linkage_item("OpenAI", "GPT-5", article.pk)],
+    )
+
+    assert counts["linkages"] == 0
+    assert counts["skipped_unresolved_refs"] == 1
+    assert Linkage.objects.count() == 0
+
+
+def test_a_linkage_whose_object_never_persisted_is_skipped_and_counted(article):
+    run_row = start_run("manual")
+
+    counts = persist(
+        run_row,
+        [article],
+        [_entity_item("OpenAI", article.pk)],
+        [],
+        [_linkage_item("OpenAI", "GPT-5", article.pk)],
+    )
+
+    assert counts["linkages"] == 0
+    assert counts["skipped_unresolved_refs"] == 1
+
+
+def test_a_linkage_naming_a_concept_that_never_persisted_is_skipped(article):
+    run_row = start_run("manual")
+
+    counts = persist(
+        run_row,
+        [article],
+        [_entity_item("OpenAI", article.pk)],
+        [],
+        [_linkage_item("OpenAI", "混合专家模型", article.pk, object_type="concept")],
+    )
+
+    assert counts["linkages"] == 0
+    assert counts["skipped_unresolved_refs"] == 1
+
+
+def test_resolvable_linkages_survive_alongside_unresolvable_ones(article):
+    run_row = start_run("manual")
+
+    counts = persist(
+        run_row,
+        [article],
+        [_entity_item("OpenAI", article.pk), _entity_item("GPT-5", article.pk, "model")],
+        [],
+        [
+            _linkage_item("OpenAI", "GPT-5", article.pk),
+            _linkage_item("OpenAI", "不存在的模型", article.pk),
+        ],
+    )
+
+    assert counts["linkages"] == 1
+    assert counts["skipped_unresolved_refs"] == 1
+
+
+def test_the_skip_count_is_absent_when_everything_resolved(article):
+    run_row = start_run("manual")
+
+    counts = persist(
+        run_row,
+        [article],
+        [_entity_item("OpenAI", article.pk), _entity_item("GPT-5", article.pk, "model")],
+        [],
+        [_linkage_item("OpenAI", "GPT-5", article.pk)],
+    )
+
+    # Absent rather than zero: the ops panel renders whatever keys are there,
+    # and a permanent "skipped: 0" row is noise.
+    assert "skipped_unresolved_refs" not in counts
