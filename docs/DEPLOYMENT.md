@@ -188,7 +188,7 @@ volumes:
   caddy_logs:
 ```
 
-> `frontend_dist` 卷由 `web` 镜像在构建阶段填充（Dockerfile 多阶段构建里 `COPY --from=frontend-builder /app/dist /app/frontend_dist`），Caddy 只读挂载。
+> `frontend_dist` 是具名卷，Caddy 只读挂载。**不能**指望它在镜像构建阶段被直接填充——具名卷只在第一次创建时会拿镜像里同路径的内容做种，此后每次部署换新镜像，卷里还是当年第一次的旧内容，新镜像白构建。D14 上线验证时就是这样栽的：镜像明明构建出了新的前端产物，线上却一直吃旧的 `index.html`。正确做法是把前端产物构建到镜像里的另一个路径（`/app/frontend_dist_build`），`web` 容器每次启动时把它复制进卷挂载的 `/app/frontend_dist`，见下面 Dockerfile 与 `command` 的实际写法。
 
 ### `Dockerfile`（多阶段）
 
@@ -214,7 +214,9 @@ COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY backend/ .
-COPY --from=frontend-builder /app/dist /app/frontend_dist
+# 不能直接 COPY 到 /app/frontend_dist——那是具名卷的挂载点，见上文说明。
+COPY --from=frontend-builder /app/dist /app/frontend_dist_build
+RUN mkdir -p /app/frontend_dist
 
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s \

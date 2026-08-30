@@ -3,6 +3,12 @@
 # /static/* to web, it never reads the files itself), so there is no shared
 # static volume here — only frontend_dist, which Caddy DOES need to serve
 # directly since it has no other way to reach the SPA build output.
+#
+# frontend_dist is a *named volume*, which Docker only seeds from the image
+# the first time the volume is created — later deploys that ship a new image
+# would otherwise keep serving whatever build first populated it. The web
+# command below re-copies its baked ./frontend_dist_build into the volume on
+# every start so it always matches the image that's actually running.
 services:
   db:
     image: postgres:16-alpine
@@ -36,7 +42,9 @@ services:
     # newline instead, which turns "--bind ..." into an unreached, separate
     # shell statement and silently leaves gunicorn on its 127.0.0.1 default.
     command: >
-      sh -c "python manage.py migrate --noinput &&
+      sh -c "rm -rf /app/frontend_dist/* &&
+      cp -r /app/frontend_dist_build/. /app/frontend_dist/ &&
+      python manage.py migrate --noinput &&
       gunicorn config.wsgi:application --bind 0.0.0.0:8000
       --workers 3 --threads 2 --timeout 120
       --access-logfile - --error-logfile -"

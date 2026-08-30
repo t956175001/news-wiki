@@ -28,7 +28,16 @@ COPY backend/requirements.txt ./backend/requirements.txt
 RUN pip install -r backend/requirements.txt
 
 COPY backend ./backend
-COPY --from=frontend-builder /app/dist ./frontend_dist
+# Baked to a path of its own rather than straight into ./frontend_dist: that
+# path is a named volume in prod (Caddy has no other way to reach the SPA
+# build), and Docker only seeds a named volume from the image's content the
+# *first* time the volume is created — every deploy after that would keep
+# serving whatever build happened to exist back then, no matter what this
+# image contains. The volume-mounted ./frontend_dist starts empty and gets
+# refreshed from this baked copy on every container start instead (see
+# deploy/docker-compose.prod.yml).
+COPY --from=frontend-builder /app/dist ./frontend_dist_build
+RUN mkdir -p ./frontend_dist
 
 WORKDIR /app/backend
 
