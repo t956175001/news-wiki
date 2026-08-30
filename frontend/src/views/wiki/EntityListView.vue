@@ -5,17 +5,8 @@ import { listEntities } from '@/api/wiki'
 import LoadingPanel from '@/components/LoadingPanel.vue'
 import ErrorState from '@/components/ErrorState.vue'
 import EmptyState from '@/components/EmptyState.vue'
+import { ENTITY_TYPE_OPTIONS } from '@/constants/entityTypes'
 import type { EntitySummary, EntityType } from '@/types/wiki'
-
-const ENTITY_TYPE_OPTIONS: { value: EntityType; label: string }[] = [
-  { value: 'person', label: 'Person' },
-  { value: 'org', label: 'Organization' },
-  { value: 'product', label: 'Product' },
-  { value: 'model', label: 'Model' },
-  { value: 'tech', label: 'Technology' },
-  { value: 'event', label: 'Event' },
-  { value: 'other', label: 'Other' },
-]
 
 const SORT_OPTIONS = [
   { value: '-mention_count', label: '提及次数 · 高到低' },
