@@ -176,3 +176,12 @@ cd frontend && npm run lint && npx vue-tsc --noEmit
   **布局**：没有照抄旧项目的企业蓝配色，`styles/tokens.scss` 定的是「研究笔记本」路线——石墨色侧边栏 + 暖白内容区，`Fraunces` 做展示字体、`IBM Plex Sans/Mono` 做正文/数据字体，一个琥珀色强调色专门留给证据/引用相关的高亮（呼应产品「every claim is sourced」的卖点），另外把 `Entity.ENTITY_TYPES` 的七个分类色也一并定进了 tokens，D9/D10 画徽标和图谱节点时能直接用。
   **验证**（sqlite + `manage.py runserver`，事后清理了进程和临时库文件）：`npm run lint`、`vue-tsc --noEmit`（构建模式下发现 `baseUrl` 在 TS 6 里已弃用，删掉后 `paths` 照常解析）、`npm run test`（4 个测试，含 client 拦截器与 usePolling）、`npm run build` 均通过；`npm run dev` 起在 5174，5 个路由 curl 全部 200，侧边栏按 `route.meta.navKey` 高亮；backend 用 sqlite 起在 8000 后，`curl 127.0.0.1:5174/api/v1/health/` 经 Vite 代理拿到 `{"status":"ok","db":"ok"}`，代理链路端到端验证过。**没做可视化浏览器截图**：本机 Chrome 扩展未连接，视觉细节（字体渲染、颜色观感）没有人眼确认，仅验证了功能可达性。
   下一步执行 `docs/ROADMAP.md` 的 D9（★ 词条页 + 证据溯源）。
+- **2026-08-30**：D9 完成。词条列表（`EntityListView.vue`：搜索 + 类型筛选 + 排序 + 分页，卡片网格）与词条详情（`EntityDetailView.vue`）落地，详情页只发一个请求（`GET /api/v1/wiki/entities/{id}/`），不拆多请求。
+  **`LinkageGroup.vue`**：拿到的是扁平的 `linkages[]`，组件内部按 `predicate` 分组（`Map` 保序，不重排——后端 `linkage_payload` 已经按谓词+置信度排好，分组时打乱顺序就白排了）。每行是方向图标 + 对方名称 + 置信度 + 展开按钮；`object.kind==='entity'` 才渲染成 `RouterLink`，`concept` 目前没有详情页（路由表里没有），先渲染成纯文本带 namespace，等 D10/图谱页决定概念怎么跳转再回来接上。
+  **`EvidenceCard.vue`**：全五项证据信息（原文片段、来源标题+外链+时间+源站、置信度、prompt_key+version、run_id）都在。置信度不是 Evidence 自己的字段（模型里没有），是父级 `Linkage.confidence` 通过 prop 传下来的，一条 linkage 下的多条证据显示同一个值——这是数据模型决定的，不是疏漏。`run_id` 截断显示前 8 位，点击整段跳 `/ops?run_id=<完整id>`；D11 做流水线面板时要读这个 query 参数自动展开对应 run（选了 query 不是 hash，因为 D11 spec 里两者二选一，这里先定下来）。
+  **404 处理**：DRF 默认 `NotFound` 的 `code` 是 `not_found`（不是自定义 `AppError`，走的是 `drf_exceptions.py` 里的兜底分支），前端按这个值判断实体不存在 vs. 其他错误，不是猜的，是读 `drf_exceptions.py` 源码确认的。
+  **补齐的工程缺口**：`@vue/test-utils` 在 D8 漏装了（vitest 配了 jsdom 但没有装挂载组件的库），这次补上；`listEntities` 加了 `ordering` 参数（对应后端 `EntityViewSet.ordering_fields`，D8 写类型时没预留）。
+  全程 TDD：`EvidenceCard.test.ts`（6 例）、`LinkageGroup.test.ts`（6 例，含分组正确性与展开/收起）、`EntityDetailView.test.ts`（5 例，骨架屏/正常态/空关系态/404/其他错误），每个都先跑红确认失败原因对，再实现到绿。`EntityListView.vue` 本身没有专门测试文件——D9 的测试判据只点了这三个组件，没有额外加测试范围。
+  全量 21 个前端测试通过，`vue-tsc --noEmit` 和 `npm run build` 干净，`eslint --fix` 只重排了几处换行。
+  **视觉验证**：这次 Chrome 扩展仍未连上，改用 Playwright MCP 起了独立浏览器，sqlite + 已有的 demo fixture（360 实体/452 关系/1049 证据）实跑截图验证——词条卡片网格、详情页头部、关系分组展开证据卡（琥珀色底+左侧竖线+等宽字体）、`run_id` 跳转 `/ops?run_id=...`、404 态、空关系态（`Aakriti Shah`，entity id 43）全部过了一遍，控制台零 JS 错误。
+  下一步执行 `docs/ROADMAP.md` 的 D10（关系图谱 + 今日简报页）。

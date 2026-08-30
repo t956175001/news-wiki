@@ -13,6 +13,7 @@ import type {
 export interface ListEntitiesParams {
   entity_type?: string
   search?: string
+  ordering?: string
   page?: number
   page_size?: number
 }
