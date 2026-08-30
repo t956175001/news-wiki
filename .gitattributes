@@ -5,6 +5,9 @@
 
 *.sh text eol=lf
 *.py text eol=lf
+# The demo fixture is 1.4 MB of one-record-per-line JSON; without this it
+# re-writes end to end every time it is dumped on a different platform.
+*.json text eol=lf
 *.yml text eol=lf
 *.yaml text eol=lf
 Dockerfile text eol=lf
