@@ -32,6 +32,11 @@ const today = dayjs().format('YYYY年M月D日')
   padding: 0 var(--space-6);
   background: var(--color-surface);
   border-bottom: 1px solid var(--color-border);
+  gap: var(--space-3);
+
+  @media (max-width: 768px) {
+    padding: 0 var(--space-4);
+  }
 }
 
 .app-header__title {
