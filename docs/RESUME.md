@@ -1,7 +1,9 @@
 # RESUME — 简历话术与面试准备
 
-> D13 时用真实数字替换所有 `<>` 占位符。
 > **原则：只写真做过的**。面试官会顺着简历上的每个词往下挖，写不出细节的词一律删掉。
+> 数字更新于 2026-08-30（D13）：后端 488 个测试 + 前端 39 个测试通过 `pytest -q` / `npm run test` 实测得出；
+> 演示数据集（95 篇文章 → 360 实体 / 219 概念 / 452 关系 / 1049 证据）来自 `backend/fixtures/demo.json`，逐条断言见 `tests/test_demo_fixture.py`；
+> 线上运行统计（11 次运行、91% 成功率、¥3.55 总成本）来自生产环境 `GET /api/v1/ops/stats/`，会随每日定时任务持续增长，以 `/ops` 页面实时数字为准。
 
 ---
 
@@ -10,24 +12,24 @@
 ### 版本 A：投 AI 应用 / LLM 应用开发岗
 
 > **news-wiki — 可溯源的 AI 资讯知识库**｜个人项目｜2026.08 - 2026.09
-> [github.com/xxx/news-wiki](https://github.com/xxx/news-wiki) ｜ [在线演示](https://news-wiki.example.com)
+> [github.com/t956175001/news-wiki](https://github.com/t956175001/news-wiki) ｜ [在线演示](https://newswiki.cn)
 >
-> - 设计**三阶段串行抽取管线**（实体 → 概念 → 关系），将后一步的候选集约束为前一步的输出，解决关系抽取中同一实体被 LLM 拆成多个别名节点的问题；配合 JSON Schema 校验 + 指数退避重试，抽取成功率从 `<X>%` 提升到 `<Y>%`
-> - 实现**证据溯源机制**：每条 LLM 抽取结论落库时绑定原文片段、来源 URL、置信度及所用 Prompt 版本，通过数据库 CheckConstraint 强制「一条证据仅指向一个目标」，保证溯源链路不被脏数据污染
+> - 设计**三阶段串行抽取管线**（实体 → 概念 → 关系），将后一步的候选集约束为前一步的输出，解决关系抽取中同一实体被 LLM 拆成多个别名节点的问题；配合 JSON Schema 校验 + 指数退避重试，区分「格式错误重试」与「个别条目非法则跳过」两类失败，线上 11 次真实定时运行中 10 次完全成功、1 次部分成功（单步失败不拖垮整个 run），0 次判为完全失败
+> - 实现**证据溯源机制**：每条 LLM 抽取结论落库时绑定原文片段、来源 URL、置信度及所用 Prompt 版本，通过数据库 CheckConstraint 强制「一条证据仅指向一个目标」，保证溯源链路不被脏数据污染；演示数据集实测证据片段逐字回链原文比例约 99%
 > - 搭建 **Prompt 版本管理 + 流水线可观测体系**：Prompt 以版本记录存储，抽取时快照版本号写入证据；`ExtractionRun` 记录分步耗时/token/成本，前端面板可下钻到单次运行的每一步
-> - 设计**演示成本护栏**：预置语料 + IP 维度限流（3 次/日）+ 日预算熔断，公开演示环境日成本控制在 `<Z>` 元内
-> - Django 5 + DRF + PostgreSQL + Vue 3 + TypeScript；Docker Compose + Caddy 自动 HTTPS 部署于境外 VPS，GitHub Actions 实现 CI 与每日定时抽取；`<N>` 个单元/集成测试，LLM 调用全 mock
+> - 设计**演示成本护栏**：预置语料 + IP 维度限流（3 次/日）+ 日预算熔断（阈值 ¥5/日，超限自动切只读），公开演示环境上线以来累计运行 11 次、总成本 ¥3.55
+> - Django 5 + DRF + PostgreSQL + Vue 3 + TypeScript；Docker Compose + Caddy 自动 HTTPS 部署于境外 VPS，GitHub Actions 实现 CI 与每日定时抽取；527 个单元/集成测试（488 后端 + 39 前端），LLM 调用全 mock
 
 ### 版本 B：投后端 / 全栈岗
 
 > **news-wiki — AI 资讯结构化处理平台**｜个人项目｜2026.08 - 2026.09
-> [github.com/xxx/news-wiki](https://github.com/xxx/news-wiki) ｜ [在线演示](https://news-wiki.example.com)
+> [github.com/t956175001/news-wiki](https://github.com/t956175001/news-wiki) ｜ [在线演示](https://newswiki.cn)
 >
 > - 基于 Django 5 + DRF 设计五个领域模块（采集/抽取/简报/观测/公共），业务逻辑收敛在 service 层，视图层仅做校验与序列化；drf-spectacular 自动生成 OpenAPI 文档
-> - 设计图数据模型（实体/概念/关系/证据四表），用 UniqueConstraint 做实体与三元组去重、CheckConstraint 保证证据的单目标完整性；词条详情接口通过 `select_related`/`prefetch_related` 将嵌套查询压到 `<10` 条
+> - 设计图数据模型（实体/概念/关系/证据四表），用 UniqueConstraint 做实体与三元组去重、CheckConstraint 保证证据的单目标完整性；词条详情接口通过 `select_related`/`prefetch_related` 将嵌套查询压到固定 5 次，用 `django_assert_num_queries(5)` 卡住不让它随关系数增长退化
 > - 长任务采用后台线程 + 状态表 + 前端轮询方案替代 Celery，在日均个位数任务量的场景下省去 Redis 与 worker 进程；定时调度外置到 GitHub Actions，与应用解耦
-> - Docker Compose 三容器编排（Caddy + Gunicorn + PostgreSQL），Caddy 自动签发续期证书；GitHub Actions 实现测试、构建、SSH 部署全链路
-> - `<N>` 个测试覆盖服务层关键分支（含 LLM 返回非法 JSON、字段缺失、重试耗尽等失败路径），外部依赖全 mock
+> - Docker Compose 三容器编排（Caddy + Gunicorn + PostgreSQL），Caddy 自动签发续期证书；GitHub Actions 实现测试、构建、SSH 部署全链路，线上跑在阿里云首尔节点，ITDOG 290 个国内监测点实测 100% 可达、平均响应 0.71s
+> - 488 个后端测试覆盖服务层关键分支（含 LLM 返回非法 JSON、字段缺失、重试耗尽、内容审查拒答等失败路径），外部依赖全 mock；另有 39 个前端测试覆盖组件与轮询逻辑
 
 ### 一句话版（用于个人简介 / 求职信）
 
@@ -128,5 +130,5 @@ A：优先级排序：① 建评测集，把 Prompt 迭代变成有数据支撑�
 - [ ] `git log` 看着规范，没有 "fix bug"、"update" 这种无信息量的 message
 - [ ] 能在 3 分钟内本地跑起来（`docker compose up`），万一要现场演示
 - [ ] 简历上写的每个数字都能说出怎么来的
-- [ ] `DECISIONS.md` 里 12 条 ADR 至少能脱口而出 5 条
+- [ ] `DECISIONS.md` 里 14 条 ADR 至少能脱口而出 5 条
 - [ ] 准备好回答"这个项目哪部分是 AI 写的"——诚实回答用了 AI 辅助，但设计决策、取舍判断、调试过程是自己的，并且能证明（ADR 文档、失败路径的测试用例、Prompt 迭代记录）
