@@ -1,4 +1,4 @@
-django>=5.0,<5.1
+django>=6.1,<6.2
 djangorestframework
 django-filter
 drf-spectacular
