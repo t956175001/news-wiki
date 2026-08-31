@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import dayjs from 'dayjs'
 import { getBriefByDate, getLatestBrief, listBriefs } from '@/api/brief'
 import { ApiError } from '@/api/client'
@@ -8,6 +9,9 @@ import LoadingPanel from '@/components/LoadingPanel.vue'
 import ErrorState from '@/components/ErrorState.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import type { DailyBriefDetail } from '@/types/brief'
+
+const route = useRoute()
+const router = useRouter()
 
 const brief = ref<DailyBriefDetail | null>(null)
 // Newest-first, mirrors DailyBrief.Meta.ordering — powers the prev/next
@@ -59,10 +63,17 @@ async function loadLatest() {
 async function loadDate(date: string) {
   loading.value = true
   errorMessage.value = ''
+  // Mirrored into the URL so a past issue can be linked to directly. `replace`
+  // keeps paging through the archive from filling up the back button.
+  router.replace({ query: { date } })
   try {
     brief.value = await getBriefByDate(date)
   } catch (e) {
-    errorMessage.value = e instanceof Error ? e.message : '加载失败，请稍后重试。'
+    if (e instanceof ApiError && e.code === 'not_found') {
+      noBrief.value = true
+    } else {
+      errorMessage.value = e instanceof Error ? e.message : '加载失败，请稍后重试。'
+    }
   } finally {
     loading.value = false
   }
@@ -96,7 +107,12 @@ function formatCitationTime(value: string | null) {
 
 onMounted(() => {
   loadDateList()
-  loadLatest()
+  const requested = route.query.date
+  if (typeof requested === 'string' && requested) {
+    loadDate(requested)
+  } else {
+    loadLatest()
+  }
 })
 </script>
 

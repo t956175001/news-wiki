@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { listEntities } from '@/api/wiki'
 import LoadingPanel from '@/components/LoadingPanel.vue'
 import ErrorState from '@/components/ErrorState.vue'
@@ -16,12 +16,18 @@ const SORT_OPTIONS = [
 ]
 
 const PAGE_SIZE = 20
+const DEFAULT_ORDERING = '-mention_count'
 
+const route = useRoute()
 const router = useRouter()
 
+// Search, filter, sort and page live in the URL rather than in component state.
+// Two things follow: a filtered list is shareable, and coming back from an
+// entry page restores the exact list the visitor left — which is the whole
+// point of having a back button.
 const search = ref('')
 const entityType = ref<EntityType | undefined>(undefined)
-const ordering = ref('-mention_count')
+const ordering = ref(DEFAULT_ORDERING)
 const page = ref(1)
 
 const loading = ref(true)
@@ -30,6 +36,26 @@ const entities = ref<EntitySummary[]>([])
 const total = ref(0)
 
 let searchDebounce: ReturnType<typeof setTimeout> | null = null
+
+function readQuery() {
+  const query = route.query
+  search.value = typeof query.search === 'string' ? query.search : ''
+  entityType.value =
+    typeof query.entity_type === 'string' && query.entity_type
+      ? (query.entity_type as EntityType)
+      : undefined
+  ordering.value = typeof query.ordering === 'string' ? query.ordering : DEFAULT_ORDERING
+  page.value = Number(query.page) || 1
+}
+
+function writeQuery() {
+  const query: Record<string, string> = {}
+  if (search.value) query.search = search.value
+  if (entityType.value) query.entity_type = entityType.value
+  if (ordering.value !== DEFAULT_ORDERING) query.ordering = ordering.value
+  if (page.value !== 1) query.page = String(page.value)
+  router.replace({ query })
+}
 
 async function fetchEntities() {
   loading.value = true
@@ -57,18 +83,26 @@ watch(search, () => {
   if (searchDebounce) clearTimeout(searchDebounce)
   searchDebounce = setTimeout(() => {
     page.value = 1
+    writeQuery()
     fetchEntities()
   }, 300)
 })
 
 watch([entityType, ordering], () => {
   page.value = 1
+  writeQuery()
   fetchEntities()
 })
 
-watch(page, fetchEntities)
+watch(page, () => {
+  writeQuery()
+  fetchEntities()
+})
 
-onMounted(fetchEntities)
+onMounted(() => {
+  readQuery()
+  fetchEntities()
+})
 
 function goToDetail(id: number) {
   router.push(`/wiki/${id}`)

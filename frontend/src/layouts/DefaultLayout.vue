@@ -1,6 +1,12 @@
 <script setup lang="ts">
+import { ref } from 'vue'
 import AppSider from '@/components/AppSider.vue'
 import AppHeader from '@/components/AppHeader.vue'
+import { useScrollRestoration } from '@/composables/useScrollRestoration'
+
+// This element, not the window, is what scrolls — see the composable.
+const content = ref<HTMLElement | null>(null)
+useScrollRestoration(content)
 </script>
 
 <template>
@@ -8,7 +14,7 @@ import AppHeader from '@/components/AppHeader.vue'
     <AppSider />
     <div class="app-shell__body">
       <AppHeader />
-      <main class="app-shell__content">
+      <main ref="content" class="app-shell__content">
         <RouterView />
       </main>
     </div>

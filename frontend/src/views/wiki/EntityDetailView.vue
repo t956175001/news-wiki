@@ -6,6 +6,7 @@ import { getEntity } from '@/api/wiki'
 import { ApiError } from '@/api/client'
 import EmptyState from '@/components/EmptyState.vue'
 import ErrorState from '@/components/ErrorState.vue'
+import PageBack from '@/components/PageBack.vue'
 import LinkageGroup from './components/LinkageGroup.vue'
 import type { EntityDetail } from '@/types/wiki'
 
@@ -46,6 +47,8 @@ const confidencePercent = computed(() => Math.round((entity.value?.confidence ??
 
 <template>
   <section class="entity-detail">
+    <PageBack fallback="/wiki" label="返回词条库" />
+
     <div v-if="loading" class="entity-detail__skeleton">
       <a-skeleton
         active
@@ -73,6 +76,13 @@ const confidencePercent = computed(() => Math.round((entity.value?.confidence ??
           >
             {{ entity.entity_type_display }}
           </span>
+          <RouterLink
+            v-if="entity.linkages.length"
+            :to="`/graph?center=e${entity.id}`"
+            class="entity-detail__graph-link"
+          >
+            在图谱中查看 →
+          </RouterLink>
         </div>
 
         <div v-if="entity.aliases.length" class="entity-detail__aliases">
@@ -175,6 +185,19 @@ const confidencePercent = computed(() => Math.round((entity.value?.confidence ??
   border-bottom: 1px solid var(--color-border);
   padding-bottom: var(--space-5);
   margin-bottom: var(--space-6);
+  margin-top: var(--space-3);
+}
+
+.entity-detail__graph-link {
+  margin-left: auto;
+  font-size: 13px;
+  color: var(--color-accent-strong);
+  text-decoration: none;
+  white-space: nowrap;
+
+  &:hover {
+    text-decoration: underline;
+  }
 }
 
 .entity-detail__title-row {
