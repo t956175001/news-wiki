@@ -50,9 +50,73 @@ describe('GraphChart', () => {
     const option = mockChart.setOption.mock.calls[0][0]
     const series = option.series[0]
     expect(series.type).toBe('graph')
-    expect(series.data).toEqual(sampleData.nodes)
     expect(series.links).toEqual(sampleData.links)
     expect(series.categories).toEqual(sampleData.categories)
+    // Nodes pass through as the backend shaped them; the only thing added is
+    // the per-node label visibility decided below.
+    const withoutLabel = series.data.map((node: Record<string, unknown>) => {
+      const copy = { ...node }
+      delete copy.label
+      return copy
+    })
+    expect(withoutLabel).toEqual(sampleData.nodes)
+  })
+
+  it('escapes HTML in tooltips, which echarts renders unescaped', () => {
+    // Node names are LLM output derived from scraped pages. A name carrying a
+    // tag is the one path from an article we do not control to script in the
+    // page, so it has to come back inert.
+    const hostile: GraphData = {
+      ...sampleData,
+      nodes: [
+        {
+          id: 'e1',
+          name: '<img src=x onerror=alert(1)>',
+          category: 'org',
+          value: 2,
+          symbolSize: 16,
+        },
+      ],
+      links: [{ source: 'e1', target: 'e1', predicate: '<script>alert(2)</script>', value: 0.5 }],
+    }
+    wrapper = mount(GraphChart, { props: { data: hostile } })
+    const { formatter } = mockChart.setOption.mock.calls[0][0].tooltip
+
+    const nodeHtml = formatter({ dataType: 'node', data: hostile.nodes[0] })
+    const edgeHtml = formatter({ dataType: 'edge', data: hostile.links[0] })
+
+    expect(nodeHtml).toContain('&lt;img src=x onerror=alert(1)&gt;')
+    expect(nodeHtml).not.toContain('<img')
+    expect(edgeHtml).toBe('&lt;script&gt;alert(2)&lt;/script&gt;')
+  })
+
+  it('labels only well-connected nodes once the graph gets crowded', () => {
+    // 150 labels at once is a wall of text; the rest surface on hover via
+    // emphasis.label, which is asserted here too so it is not silently lost.
+    const crowded: GraphData = {
+      ...sampleData,
+      nodes: Array.from({ length: 50 }, (_, index) => ({
+        id: `e${index}`,
+        name: `n${index}`,
+        category: 'org',
+        value: index < 5 ? 4 : 1,
+        symbolSize: 14,
+      })),
+    }
+    wrapper = mount(GraphChart, { props: { data: crowded } })
+    const series = mockChart.setOption.mock.calls[0][0].series[0]
+
+    expect(
+      series.data.filter((node: { label: { show: boolean } }) => node.label.show),
+    ).toHaveLength(5)
+    expect(series.emphasis.label.show).toBe(true)
+  })
+
+  it('labels everything while the graph is still small', () => {
+    wrapper = mount(GraphChart, { props: { data: sampleData } })
+    const series = mockChart.setOption.mock.calls[0][0].series[0]
+
+    expect(series.data.every((node: { label: { show: boolean } }) => node.label.show)).toBe(true)
   })
 
   it('resizes the chart when the window resizes', () => {

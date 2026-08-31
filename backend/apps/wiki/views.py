@@ -34,7 +34,13 @@ from apps.wiki.serializers import (
     RunAcceptedSerializer,
 )
 from apps.wiki.services.extract_pipeline import run_extraction, start_run
-from apps.wiki.services.graph import DEFAULT_LIMIT, build_graph
+from apps.wiki.services.graph import (
+    DEFAULT_DEPTH,
+    DEFAULT_LIMIT,
+    DEFAULT_MIN_DEGREE,
+    MAX_DEPTH,
+    build_graph,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +135,9 @@ class GraphView(APIView):
         description=(
             "直接对齐 ECharts `graph` 系列，前端不做转换。`symbolSize` 由后端算好"
             "（`min(60, 12 + value*2)`），`value` 是该节点连着的关系数。"
-            "节点总数超过 `limit` 时按提及次数取 Top-N，并置 `truncated=true`。"
+            "节点总数超过 `limit` 时按**关系数**取 Top-N，并置 `truncated=true`。"
+            "默认隐藏没有任何关系的孤立节点（`min_degree=1`）。"
+            "传 `center` 则切换为以该节点为中心的邻域图。"
         ),
         parameters=[
             OpenApiParameter(
@@ -139,15 +147,34 @@ class GraphView(APIView):
                 "namespace", OpenApiTypes.STR, description="只保留这些命名空间的概念节点，逗号分隔可传多个。"
             ),
             OpenApiParameter("limit", OpenApiTypes.INT, description=f"节点数上限，默认 {DEFAULT_LIMIT}。"),
+            OpenApiParameter(
+                "min_degree",
+                OpenApiTypes.INT,
+                description=f"最少关系数，默认 {DEFAULT_MIN_DEGREE}；传 0 显示孤立节点。传 center 时忽略。",
+            ),
+            OpenApiParameter(
+                "center",
+                OpenApiTypes.STR,
+                description="邻域图的中心节点 id（如 `e12` / `c3`）。不存在时返回空图。",
+            ),
+            OpenApiParameter(
+                "depth",
+                OpenApiTypes.INT,
+                description=f"邻域跳数，默认 {DEFAULT_DEPTH}，上限 {MAX_DEPTH}。仅在传了 center 时生效。",
+            ),
         ],
         responses={200: GraphSerializer},
     )
     def get(self, request: Request) -> Response:
+        center = (request.query_params.get("center") or "").strip() or None
         return Response(
             build_graph(
                 entity_type=_list_param(request, "entity_type"),
                 namespace=_list_param(request, "namespace"),
                 limit=_int_param(request, "limit", DEFAULT_LIMIT),
+                min_degree=_int_param(request, "min_degree", DEFAULT_MIN_DEGREE),
+                center=center,
+                depth=_int_param(request, "depth", DEFAULT_DEPTH),
             )
         )
 

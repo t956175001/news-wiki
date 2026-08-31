@@ -29,6 +29,12 @@ export interface GraphParams {
   entity_type?: string
   namespace?: string
   limit?: number
+  /** Minimum relation count. Backend default is 1, i.e. isolated nodes hidden. */
+  min_degree?: number
+  /** Prefixed node id (`e12` / `c3`); switches the response to an ego graph. */
+  center?: string
+  /** Hops from `center`. Only meaningful alongside it. */
+  depth?: number
 }
 
 export async function listEntities(

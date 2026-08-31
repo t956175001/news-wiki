@@ -347,18 +347,196 @@ def test_symbol_size_is_capped(client):
 
 
 def test_the_graph_truncates_to_the_top_n(client, entry):
+    """limit=1 cannot hold an edge, so this falls back to the plain rank cut."""
     body = client.get("/api/v1/wiki/graph/?limit=1").json()
 
     assert body["truncated"] is True
     assert len(body["nodes"]) == 1
-    # Ranked by mention_count, so the most-cited entity is the one that stays.
+    # Ranked by degree, so the best-connected node is the one that stays.
     assert body["nodes"][0]["name"] == "OpenAI"
+
+
+def test_a_filter_that_isolates_everything_still_shows_the_nodes(client, entry):
+    """`?entity_type=product` keeps GPT-5, whose relations all point at orgs.
+
+    Every candidate is render-isolated, so edge-driven selection finds nothing
+    to admit. An empty canvas would read as "no such data"; the nodes exist and
+    should be shown.
+    """
+    for index in range(3):
+        product = Entity.objects.create(
+            name=f"产品{index}", normalized_name=f"产品{index}", entity_type="product"
+        )
+        Linkage.objects.create(subject_entity=entry["openai"], predicate="发布", object_entity=product)
+
+    body = client.get("/api/v1/wiki/graph/?entity_type=product&limit=2").json()
+
+    assert body["truncated"] is True
+    assert len(body["nodes"]) == 2
+    assert body["links"] == []
 
 
 def test_truncation_drops_edges_to_nodes_that_did_not_survive(client, entry):
     body = client.get("/api/v1/wiki/graph/?limit=1").json()
 
     assert body["links"] == []
+
+
+def test_truncation_never_leaves_a_node_without_a_visible_edge(client):
+    """ADR-015, the second half.
+
+    Ranking by degree is not enough on its own: a hub's neighbours are leaves,
+    the leaves fall below the cut, and the hub lands on the canvas with nothing
+    attached. Here two hubs of 6 leaves each compete for a 6-node budget — the
+    right answer is one whole star, not both hub nodes plus four orphans.
+    """
+    for hub_index in range(2):
+        hub = Entity.objects.create(
+            name=f"枢纽{hub_index}", normalized_name=f"枢纽{hub_index}", entity_type="org"
+        )
+        for leaf_index in range(6):
+            leaf = Entity.objects.create(
+                name=f"叶{hub_index}-{leaf_index}",
+                normalized_name=f"叶{hub_index}-{leaf_index}",
+                entity_type="product",
+            )
+            Linkage.objects.create(subject_entity=hub, predicate="关联", object_entity=leaf)
+
+    body = client.get("/api/v1/wiki/graph/?limit=6").json()
+
+    assert body["truncated"] is True
+    assert len(body["nodes"]) == 6
+    drawn = {node_id for link in body["links"] for node_id in (link["source"], link["target"])}
+    assert drawn == {node["id"] for node in body["nodes"]}
+
+
+def test_min_degree_zero_keeps_the_plain_rank_cut(client):
+    """The escape hatch has to stay honest: asked for everything, get everything.
+
+    Ranked purely by degree, so the isolated node is last and gets cut — but it
+    is eligible, which is the difference from the default view where it is not.
+    """
+    hub = Entity.objects.create(name="枢纽", normalized_name="枢纽", entity_type="org")
+    leaf = Entity.objects.create(name="叶", normalized_name="叶", entity_type="product")
+    Linkage.objects.create(subject_entity=hub, predicate="关联", object_entity=leaf)
+    Entity.objects.create(name="孤点", normalized_name="孤点", entity_type="org")
+
+    body = client.get("/api/v1/wiki/graph/?limit=3&min_degree=0").json()
+
+    assert {node["name"] for node in body["nodes"]} == {"枢纽", "叶", "孤点"}
+    assert body["truncated"] is False
+
+
+def test_truncation_keeps_the_best_connected_node_not_the_most_mentioned(client):
+    """ADR-015. The reason the live graph was 150 nodes and 37 edges.
+
+    `mention_count` is 1 for almost every entity, so ranking by it made the cut
+    arbitrary and routinely dropped the hubs. Here the hub is mentioned once and
+    the loner seventeen times: the hub is the one worth drawing.
+    """
+    hub = Entity.objects.create(name="枢纽", normalized_name="枢纽", entity_type="org", mention_count=1)
+    for index in range(3):
+        other = Entity.objects.create(
+            name=f"n{index}", normalized_name=f"n{index}", entity_type="product", mention_count=1
+        )
+        Linkage.objects.create(subject_entity=hub, predicate="关联", object_entity=other)
+    Entity.objects.create(name="独行侠", normalized_name="独行侠", entity_type="org", mention_count=17)
+
+    body = client.get("/api/v1/wiki/graph/?limit=1&min_degree=0").json()
+
+    assert [node["name"] for node in body["nodes"]] == ["枢纽"]
+
+
+# --- min_degree ---------------------------------------------------------
+
+
+def test_isolated_nodes_are_hidden_by_default(client, entry):
+    Entity.objects.create(name="没有关系的实体", normalized_name="没有关系的实体", entity_type="org")
+
+    names = {node["name"] for node in client.get("/api/v1/wiki/graph/").json()["nodes"]}
+
+    assert "没有关系的实体" not in names
+    assert "OpenAI" in names
+
+
+def test_min_degree_zero_brings_the_isolated_nodes_back(client, entry):
+    Entity.objects.create(name="没有关系的实体", normalized_name="没有关系的实体", entity_type="org")
+
+    body = client.get("/api/v1/wiki/graph/?min_degree=0").json()
+
+    assert "没有关系的实体" in {node["name"] for node in body["nodes"]}
+
+
+def test_min_degree_can_be_raised_to_show_only_hubs(client, entry):
+    body = client.get("/api/v1/wiki/graph/?min_degree=3").json()
+
+    # OpenAI has three edges; GPT-5 has two and the concept has one.
+    assert [node["name"] for node in body["nodes"]] == ["OpenAI"]
+    # Its edges all point at nodes that were cut, so none can be drawn.
+    assert body["links"] == []
+
+
+# --- ego graph ----------------------------------------------------------
+
+
+def test_center_returns_only_the_neighbourhood(client, entry):
+    outsider = Entity.objects.create(name="局外人", normalized_name="局外人", entity_type="org")
+    Linkage.objects.create(subject_entity=outsider, predicate="关联", object_entity=outsider)
+
+    body = client.get(f"/api/v1/wiki/graph/?center=e{entry['openai'].pk}").json()
+
+    names = {node["name"] for node in body["nodes"]}
+    assert names == {"OpenAI", "GPT-5", "混合专家模型"}
+    assert "局外人" not in names
+
+
+def test_the_neighbourhood_follows_edges_in_both_directions(client, entry):
+    """`GPT-5 -[属于]-> OpenAI` belongs on OpenAI's page as much as the reverse."""
+    body = client.get(f"/api/v1/wiki/graph/?center=e{entry['gpt5'].pk}&depth=1").json()
+
+    assert "OpenAI" in {node["name"] for node in body["nodes"]}
+
+
+def test_depth_two_reaches_one_hop_further(client, entry):
+    far = Entity.objects.create(name="远端", normalized_name="远端", entity_type="product")
+    Linkage.objects.create(subject_entity=entry["gpt5"], predicate="衍生", object_entity=far)
+
+    one_hop = client.get(f"/api/v1/wiki/graph/?center=e{entry['openai'].pk}&depth=1").json()
+    two_hops = client.get(f"/api/v1/wiki/graph/?center=e{entry['openai'].pk}&depth=2").json()
+
+    assert "远端" not in {node["name"] for node in one_hop["nodes"]}
+    assert "远端" in {node["name"] for node in two_hops["nodes"]}
+
+
+def test_an_unknown_center_yields_an_empty_graph_rather_than_an_error(client, entry):
+    response = client.get("/api/v1/wiki/graph/?center=e999999")
+
+    assert response.status_code == 200
+    assert response.json()["nodes"] == []
+
+
+def test_a_center_with_no_relations_still_shows_itself(client, entry):
+    """min_degree must not remove the one node the caller asked for by name."""
+    lonely = Entity.objects.create(name="孤零零", normalized_name="孤零零", entity_type="org")
+
+    body = client.get(f"/api/v1/wiki/graph/?center=e{lonely.pk}").json()
+
+    assert [node["name"] for node in body["nodes"]] == ["孤零零"]
+    assert body["links"] == []
+
+
+def test_a_concept_can_be_the_center(client, entry):
+    body = client.get(f"/api/v1/wiki/graph/?center=c{entry['concept'].pk}").json()
+
+    assert {node["name"] for node in body["nodes"]} == {"混合专家模型", "OpenAI"}
+
+
+def test_depth_is_capped(client, entry):
+    """A depth of 99 on a connected graph would just be the whole graph."""
+    capped = client.get(f"/api/v1/wiki/graph/?center=e{entry['openai'].pk}&depth=99").json()
+    at_max = client.get(f"/api/v1/wiki/graph/?center=e{entry['openai'].pk}&depth=3").json()
+
+    assert capped["nodes"] == at_max["nodes"]
 
 
 def test_the_graph_can_be_filtered_by_entity_type(client, entry):
@@ -384,11 +562,14 @@ def test_the_graph_can_be_filtered_by_multiple_entity_types(client, entry):
 
 
 def test_the_graph_can_be_filtered_by_multiple_namespaces(client):
-    Concept.objects.create(name="A", namespace="technique")
-    Concept.objects.create(name="B", namespace="policy")
-    Concept.objects.create(name="C", namespace="trend")
+    subject = Entity.objects.create(name="主语", normalized_name="主语", entity_type="org")
+    for name, namespace in (("A", "technique"), ("B", "policy"), ("C", "trend")):
+        concept = Concept.objects.create(name=name, namespace=namespace)
+        # Each needs an edge to survive the default min_degree=1.
+        Linkage.objects.create(subject_entity=subject, predicate="采用", object_concept=concept)
 
     body = client.get("/api/v1/wiki/graph/?namespace=technique,policy").json()
+    body["nodes"] = [node for node in body["nodes"] if node["id"].startswith("c")]
 
     names = {node["name"] for node in body["nodes"]}
     assert names == {"A", "B"}

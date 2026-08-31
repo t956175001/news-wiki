@@ -1,13 +1,21 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as echarts from 'echarts/core'
 import { GraphChart as EChartsGraphChart } from 'echarts/charts'
 import { LegendComponent, TooltipComponent } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
 import type { EChartsOption } from 'echarts'
+import { escapeHtml } from '@/utils/escapeHtml'
 import type { GraphData } from '@/types/wiki'
 
 echarts.use([EChartsGraphChart, TooltipComponent, LegendComponent, CanvasRenderer])
+
+// Showing every name at once turns a few hundred nodes into a wall of text.
+// Hubs keep a permanent label; everything else reveals its name on hover via
+// `emphasis.label`, so nothing is actually hidden — it just is not shouted.
+const ALWAYS_LABEL_DEGREE = 3
+// Above this many nodes even the hubs go quiet, because "hub" stops being rare.
+const LABEL_ALL_BELOW = 40
 
 const props = defineProps<{ data: GraphData }>()
 const emit = defineEmits<{ nodeClick: [id: string] }>()
@@ -15,26 +23,52 @@ const emit = defineEmits<{ nodeClick: [id: string] }>()
 const el = ref<HTMLDivElement | null>(null)
 let chart: echarts.ECharts | null = null
 
+/** Force parameters that hold their shape across two orders of magnitude.
+ *
+ * One fixed set cannot do that: the spacing that lets a 13-node ego graph
+ * breathe pushes 150 nodes off the canvas entirely. Note the direction — as
+ * the graph grows the nodes need *less* room each and *more* gravity, because
+ * the canvas does not grow with them. (ECharts has no auto-fit for force
+ * layouts; roam is a fallback, not a substitute for landing on screen.)
+ */
+function forceLayout(nodeCount: number) {
+  const t = Math.min(1, Math.max(0, (nodeCount - 20) / 180))
+  return {
+    repulsion: Math.round(220 - 160 * t),
+    edgeLength: [Math.round(60 - 25 * t), Math.round(140 - 80 * t)] as [number, number],
+    gravity: 0.05 + 0.13 * t,
+    friction: 0.6,
+  }
+}
+
 // The backend already shapes nodes/links/categories for ECharts' `graph`
-// series (ARCHITECTURE 4.2) — this passes them straight through.
+// series (ARCHITECTURE 4.2) — this only adds presentation on top.
 function buildOption(data: GraphData): EChartsOption {
+  const labelEverything = data.nodes.length <= LABEL_ALL_BELOW
+
   return {
     tooltip: {
+      // ECharts renders this string as HTML. `name` and `predicate` are LLM
+      // output derived from scraped articles, so they are escaped rather than
+      // trusted. See utils/escapeHtml.ts.
       formatter: (params) => {
         const item = Array.isArray(params) ? params[0] : params
         if (item.dataType === 'edge') {
           const link = item.data as { predicate?: string }
-          return link.predicate ?? ''
+          return escapeHtml(link.predicate ?? '')
         }
-        const node = item.data as { name?: string }
-        return node.name ?? ''
+        const node = item.data as { name?: string; value?: number }
+        const name = escapeHtml(node.name ?? '')
+        return node.value
+          ? `${name}<br/><span style="opacity:.7">${node.value} 条关系</span>`
+          : name
       },
     },
     legend: [
       {
         data: data.categories.map((category) => category.name),
         top: 0,
-        textStyle: { color: 'var(--color-text-muted)', fontSize: 11 },
+        textStyle: { color: '#6b7078', fontSize: 11 },
       },
     ],
     series: [
@@ -43,18 +77,36 @@ function buildOption(data: GraphData): EChartsOption {
         layout: 'force',
         roam: true,
         draggable: true,
-        label: { show: true, position: 'right', fontSize: 11 },
+        // Keep the layout box clear of the legend and of the hint line at the
+        // bottom left; otherwise nodes settle underneath both.
+        top: 34,
+        bottom: 28,
+        left: 20,
+        right: 20,
         categories: data.categories,
-        data: data.nodes,
+        data: data.nodes.map((node) => ({
+          ...node,
+          label: { show: labelEverything || node.value >= ALWAYS_LABEL_DEGREE },
+        })),
         links: data.links,
-        force: {
-          repulsion: 140,
-          edgeLength: [40, 120],
-          gravity: 0.12,
-          friction: 0.6,
+        force: forceLayout(data.nodes.length),
+        label: { position: 'right', fontSize: 11, color: '#17181c' },
+        emphasis: {
+          // Dim everything outside the hovered node's neighbourhood, so one
+          // hover answers "what is this connected to" without any clicking.
+          // (`blurScope` is left at its default: there is one series here, so
+          // the coordinate-system scope it already uses is the whole canvas.)
+          focus: 'adjacency',
+          label: { show: true, fontWeight: 'bold' },
+          lineStyle: { width: 2.5, opacity: 0.9 },
+          edgeLabel: {
+            show: true,
+            fontSize: 10,
+            formatter: (params) =>
+              escapeHtml(String((params.data as { predicate?: string }).predicate ?? '')),
+          },
         },
-        emphasis: { focus: 'adjacency', lineStyle: { width: 2.5 } },
-        lineStyle: { color: 'source', curveness: 0.1, opacity: 0.35 },
+        lineStyle: { color: 'source', curveness: 0.12, opacity: 0.28 },
       },
     ],
   }
@@ -67,6 +119,14 @@ function render() {
 function handleResize() {
   chart?.resize()
 }
+
+/** Re-run the force layout from scratch. Exposed for the toolbar's reset. */
+function reset() {
+  render()
+}
+defineExpose({ reset })
+
+const nodeCount = computed(() => props.data.nodes.length)
 
 onMounted(() => {
   if (!el.value) return
@@ -90,13 +150,34 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="el" class="graph-chart"></div>
+  <div class="graph-chart">
+    <div ref="el" class="graph-chart__canvas"></div>
+    <p class="graph-chart__hint mono">
+      {{ nodeCount }} 个节点 · 滚轮缩放，拖拽平移，悬停高亮邻居，点击进入词条
+    </p>
+  </div>
 </template>
 
 <style scoped lang="scss">
 .graph-chart {
+  position: relative;
   width: 100%;
   height: 100%;
   min-height: 560px;
+}
+
+.graph-chart__canvas {
+  width: 100%;
+  height: 100%;
+}
+
+.graph-chart__hint {
+  position: absolute;
+  left: var(--space-3);
+  bottom: var(--space-2);
+  margin: 0;
+  font-size: 11px;
+  color: var(--color-text-muted);
+  pointer-events: none;
 }
 </style>
