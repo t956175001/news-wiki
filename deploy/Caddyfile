@@ -1,32 +1,72 @@
 {$SITE_DOMAIN} {
-    encode gzip zstd
+	encode gzip zstd
 
-    # API 反代到 gunicorn
-    handle /api/* {
-        reverse_proxy web:8000
-    }
-    handle /admin/* {
-        reverse_proxy web:8000
-    }
-    handle /static/* {
-        reverse_proxy web:8000
-    }
+	# /admin/ is the only door that can rewrite prompts and wiki data, and it
+	# answered 302-to-login for the whole internet. Nothing about a public demo
+	# needs that reachable, so it is gated on an IP allowlist and returns 404
+	# (not 403) to everyone else — a 403 confirms there is something there.
+	# The `:192.0.2.1` default matters: an unset variable would leave
+	# `remote_ip` with no arguments, which is a config error that stops Caddy
+	# from starting at all. 192.0.2.1 is RFC 5737 TEST-NET-1 and matches nobody.
+	@admin_allowed remote_ip {$ADMIN_ALLOWED_IPS:192.0.2.1}
 
-    # 其余交给前端 SPA
-    handle {
-        root * /srv/frontend
-        try_files {path} /index.html
-        file_server
-    }
+	# Swagger UI's page carries an inline bootstrap <script>, so it cannot live
+	# under the same `script-src 'self'` as the rest of the site. It is a
+	# generated doc page with no user data, so it gets its own relaxed policy
+	# rather than the whole origin being loosened for it.
+	@docs path /api/v1/docs /api/v1/docs/*
+	@not_docs not path /api/v1/docs /api/v1/docs/*
 
-    header {
-        X-Content-Type-Options nosniff
-        X-Frame-Options DENY
-        Referrer-Policy strict-origin-when-cross-origin
-        -Server
-    }
+	handle /api/* {
+		# Every write endpoint takes a small JSON body; anything larger is
+		# either a mistake or an attempt to tie up a gunicorn worker.
+		request_body {
+			max_size 1MB
+		}
+		reverse_proxy web:8000
+	}
+	handle /admin/* {
+		# `route` keeps these two in the written order — outside it, Caddy
+		# would apply its own directive ordering and the 404 could win.
+		route {
+			reverse_proxy @admin_allowed web:8000
+			respond 404
+		}
+	}
+	handle /static/* {
+		reverse_proxy web:8000
+	}
 
-    log {
-        output file /var/log/caddy/access.log
-    }
+	# 其余交给前端 SPA
+	handle {
+		root * /srv/frontend
+		try_files {path} /index.html
+		file_server
+	}
+
+	header {
+		# Django sets this too, but only on the responses it serves — the SPA
+		# shell at / comes straight from Caddy and had no HSTS at all. Value
+		# matches config/settings/prod.py.
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+		Permissions-Policy "geolocation=(), microphone=(), camera=(), payment=(), usb=()"
+		Cross-Origin-Opener-Policy same-origin
+		-Server
+		-X-Powered-By
+	}
+
+	# style-src keeps 'unsafe-inline': ant-design-vue v4 injects its styles at
+	# runtime through @ant-design/cssinjs, and a static SPA has no server render
+	# pass in which to hand out a nonce.
+	# img-src allows https: so an image inside a brief's markdown still renders;
+	# images cannot execute, and the markdown is DOMPurify'd before it is shown.
+	header @not_docs Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
+	header @docs Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
+
+	log {
+		output file /var/log/caddy/access.log
+	}
 }

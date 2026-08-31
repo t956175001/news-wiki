@@ -9,12 +9,18 @@ on:
     types: [completed]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     steps:
-      - uses: appleboy/ssh-action@v1
+      # Pinned to a commit, not the v1 tag: this repo is public and this step
+      # gets handed the VPS private key, so a moved tag would be a way to run
+      # someone else's code with it. SHA is appleboy/ssh-action v1.2.5.
+      - uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}

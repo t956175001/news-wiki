@@ -9,6 +9,9 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   backend:
     name: backend lint + tests
@@ -92,3 +95,53 @@ jobs:
 
       - name: build
         run: npm run build
+
+  # A typo in the Caddyfile does not fail a build — it fails the running
+  # container, and the site is down until someone notices. deploy.yml gates on
+  # this workflow, so validating here is what keeps that from reaching prod.
+  caddyfile:
+    name: caddyfile validate
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: caddy validate
+        run: |
+          docker run --rm \
+            -e SITE_DOMAIN=example.com \
+            -e ADMIN_ALLOWED_IPS=192.0.2.1 \
+            -v "$PWD/deploy/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+
+  # Advisory only. There is one accepted-and-recorded finding right now
+  # (GHSA-fgmj-fm8m-jvvx: ECharts is pinned to 5.x by CLAUDE.md's locked stack,
+  # and the fix requires a major bump), so failing the build here would leave
+  # CI permanently red and train everyone to ignore it.
+  audit:
+    name: dependency audit (advisory)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: pip-audit
+        continue-on-error: true
+        run: |
+          pip install pip-audit
+          pip-audit -r backend/requirements.txt
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: npm audit
+        continue-on-error: true
+        working-directory: frontend
+        run: npm audit --audit-level=high

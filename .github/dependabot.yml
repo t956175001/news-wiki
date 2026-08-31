@@ -1,0 +1,35 @@
+# Weekly, not daily: this is a portfolio project, and a PR queue nobody reads
+# is worse than no PR queue. Grouped so a week's patch bumps arrive as one PR
+# each rather than a dozen.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /backend
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      backend-minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      frontend-minor-and-patch:
+        update-types: ["minor", "patch"]
+    ignore:
+      # CLAUDE.md pins these; a major bump is a stack decision, not a chore.
+      - dependency-name: echarts
+        update-types: ["version-update:semver-major"]
+      - dependency-name: pinia
+        update-types: ["version-update:semver-major"]
+      - dependency-name: ant-design-vue
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
