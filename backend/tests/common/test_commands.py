@@ -46,7 +46,9 @@ def test_seed_sources_creates_the_documented_feeds():
 
     assert RssSource.objects.count() >= 4
     assert RssSource.objects.filter(enabled=True).count() >= 4
-    assert "arXiv cs.AI" in output
+    # 量子位 is the one pure-AI source and the backbone of the digest; if it
+    # ever stops being seeded, the brief quietly becomes a general tech roundup.
+    assert "量子位" in output
 
 
 def test_seed_sources_is_idempotent():
@@ -70,15 +72,65 @@ def test_seed_sources_does_not_re_enable_a_source_an_operator_switched_off():
 
 def test_seed_sources_repairs_a_renamed_source():
     run("seed_sources")
-    source = RssSource.objects.get(url="https://hnrss.org/frontpage")
+    source = RssSource.objects.get(url="https://www.qbitai.com/feed")
     source.name = "手滑改错的名字"
     source.save(update_fields=["name"])
 
     output = run("seed_sources")
 
     source.refresh_from_db()
-    assert source.name == "Hacker News Front Page"
-    assert "~ Hacker News Front Page" in output
+    assert source.name == "量子位"
+    assert "~ 量子位" in output
+
+
+def test_seed_sources_disables_a_retired_source_without_deleting_its_articles():
+    """arXiv and HN are off, not gone.
+
+    Deleting the rows would cascade to every RawArticle they own, taking the
+    committed demo corpus — the thing a first-time visitor actually sees — with
+    them.
+    """
+    arxiv = RssSource.objects.create(
+        name="arXiv cs.AI", url="http://export.arxiv.org/rss/cs.AI", enabled=True
+    )
+    RawArticle.objects.create(
+        source=arxiv,
+        title="An older English paper",
+        url="https://arxiv.org/abs/2601.00001",
+        content="…",
+        content_hash="retired-source-0001",
+    )
+
+    output = run("seed_sources")
+
+    arxiv.refresh_from_db()
+    assert arxiv.enabled is False
+    assert RawArticle.objects.filter(source=arxiv).count() == 1
+    assert "- arXiv cs.AI" in output
+
+
+def test_retirement_is_re_applied_on_every_run():
+    """Asymmetric with the enable path on purpose, and worth pinning.
+
+    A source in SOURCES is only enabled the run that creates it, so an operator
+    can switch one off and keep it off. A source in RETIRED is disabled every
+    run: the list is the declaration of what this project collects, and drift
+    away from it should not survive the next deploy. Getting arXiv back means
+    editing RETIRED, not toggling a row.
+    """
+    arxiv = RssSource.objects.create(
+        name="arXiv cs.AI", url="http://export.arxiv.org/rss/cs.AI", enabled=True
+    )
+    run("seed_sources")
+    arxiv.refresh_from_db()
+    assert arxiv.enabled is False
+
+    arxiv.enabled = True
+    arxiv.save(update_fields=["enabled"])
+    run("seed_sources")
+
+    arxiv.refresh_from_db()
+    assert arxiv.enabled is False
 
 
 # --- seed_demo, default mode --------------------------------------------
@@ -158,8 +210,13 @@ def live_network(monkeypatch):
 
     def fake_feed(url: str, timeout: float = 20.0) -> list[FeedEntry]:
         return [
+            # On topic on purpose: `seed_demo --live` runs the real sweep, and
+            # the AI-topic filter now sits inside it. A generic headline would
+            # be dropped before ingest, and the command would fail with
+            # "nothing pending to extract" for a reason unrelated to what these
+            # tests are checking.
             FeedEntry(
-                title=f"演示文章 {n}",
+                title=f"大模型演示文章 {n}",
                 url=f"https://example.com/demo/{n}",
                 summary="",
                 author="",

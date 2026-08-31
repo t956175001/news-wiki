@@ -24,8 +24,9 @@ BODY = "OpenAI 于本周正式发布 GPT-5，主打推理能力提升。业界�
 INGEST_TOTALS = {
     "sources": 2,
     "fetched": 12,
+    "filtered": 4,
     "deduped": 3,
-    "saved": 9,
+    "saved": 5,
     "failed": 0,
     "elapsed_ms": 4210,
     "per_source": [],
@@ -165,8 +166,9 @@ def test_the_ingest_step_records_the_sweep_totals(stub_ingest, mock_llm):
         "status": "done",
         "elapsed_ms": 4210,
         "fetched": 12,
+        "filtered": 4,
         "deduped": 3,
-        "saved": 9,
+        "saved": 5,
     }
 
 

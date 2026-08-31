@@ -45,6 +45,18 @@ def make_entry(n: int, title: str | None = None) -> FeedEntry:
     )
 
 
+@pytest.fixture(autouse=True)
+def topic_filter_off(settings):
+    """Dedup and failure isolation are what this module is about.
+
+    The AI-topic filter sits in front of both and would otherwise decide which
+    of these synthetic entries ever reach them. It has its own tests in
+    `test_relevance.py`, and its interaction with the sweep is covered by the
+    section at the bottom of this file, which turns it back on explicitly.
+    """
+    settings.INGEST_TOPIC_FILTER = False
+
+
 @pytest.fixture
 def source(db) -> RssSource:
     return RssSource.objects.create(name="示例源", url="https://example.com/feed.xml")
@@ -224,6 +236,7 @@ def test_feed_level_failure_is_reported_not_raised(source, feed):
         "source": source.name,
         "source_id": source.pk,
         "fetched": 0,
+        "filtered": 0,
         "deduped": 0,
         "saved": 0,
         "failed": 0,
@@ -366,3 +379,70 @@ def test_an_article_inserted_by_a_concurrent_pass_counts_as_deduped(source, feed
     assert stats["deduped"] == 1
     assert stats["failed"] == 0
     assert RssSource.objects.get(pk=source.pk).last_error == ""
+
+
+# --- the AI-topic filter, inside the sweep ------------------------------
+
+
+@pytest.fixture
+def topic_filter_on(settings):
+    settings.INGEST_TOPIC_FILTER = True
+
+
+def test_off_topic_entries_are_counted_and_not_stored(source, feed, topic_filter_on):
+    feed(
+        [
+            make_entry(1, title="智谱发布新一代大模型"),
+            make_entry(2, title="国庆档票房破纪录"),
+            make_entry(3, title="某车企公布第三季度交付量"),
+        ]
+    )
+
+    stats = fetch_source(source, article_fetcher=StubFetcher())
+
+    assert stats["fetched"] == 3
+    assert stats["filtered"] == 2
+    assert stats["saved"] == 1
+    assert list(RawArticle.objects.values_list("title", flat=True)) == ["智谱发布新一代大模型"]
+
+
+def test_an_off_topic_entry_costs_no_page_fetch(source, feed, topic_filter_on):
+    """The whole point of filtering on the feed entry: skip the round trip.
+
+    If this ever regresses to filtering after `fetcher.fetch`, the sweep would
+    still be correct — it would just spend a request per rejected item, and a
+    general-tech feed rejects most of them.
+    """
+    fetcher = StubFetcher()
+    feed([make_entry(1, title="国庆档票房破纪录"), make_entry(2, title="大模型推理加速实测")])
+
+    fetch_source(source, article_fetcher=fetcher)
+
+    assert fetcher.calls == ["https://example.com/a2"]
+
+
+def test_filtered_entries_are_not_recorded_as_errors(source, feed, topic_filter_on):
+    """A rejected item is a routine outcome, not something to show an operator."""
+    feed([make_entry(1, title="本周股市收评")])
+
+    stats = fetch_source(source, article_fetcher=StubFetcher())
+
+    assert stats["failed"] == 0
+    assert RssSource.objects.get(pk=source.pk).last_error == ""
+
+
+def test_the_sweep_totals_include_the_filtered_count(feed, topic_filter_on, db):
+    first = RssSource.objects.create(name="源一", url="https://one.example.com/feed")
+    RssSource.objects.create(name="源二", url="https://two.example.com/feed")
+    feed([make_entry(1, title="大模型发布"), make_entry(2, title="国庆档票房破纪录")])
+
+    totals = fetch_all_enabled(article_fetcher=StubFetcher())
+
+    # Both sources see the same canned feed; the second one dedupes the article
+    # the first one saved, and both reject the off-topic entry.
+    assert totals["sources"] == 2
+    assert totals["filtered"] == 2
+    assert totals["saved"] == 1
+    assert totals["deduped"] == 1
+    assert [entry["filtered"] for entry in totals["per_source"]] == [1, 1]
+    assert totals["per_source"][0]["source_id"] == first.pk

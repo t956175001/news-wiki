@@ -19,6 +19,7 @@ from ..fetchers.article import HttpArticleFetcher
 from ..fetchers.base import ArticleFetcher, FetchedArticle
 from ..fetchers.rss import FeedEntry, fetch_feed
 from ..models import RawArticle, RssSource
+from .relevance import is_ai_related
 
 logger = logging.getLogger(__name__)
 
@@ -70,14 +71,15 @@ def _save_article(source: RssSource, entry: FeedEntry, fetched: FetchedArticle, 
 def fetch_source(source: RssSource, article_fetcher: ArticleFetcher | None = None) -> dict:
     """Fetch one source end to end and store its new articles.
 
-    Returns `{"source", "source_id", "fetched", "deduped", "saved", "failed"}`,
-    plus `"error"` when the feed itself could not be read.
+    Returns `{"source", "source_id", "fetched", "filtered", "deduped", "saved",
+    "failed"}`, plus `"error"` when the feed itself could not be read.
     """
     fetcher = article_fetcher or HttpArticleFetcher()
     stats = {
         "source": source.name,
         "source_id": source.pk,
         "fetched": 0,
+        "filtered": 0,
         "deduped": 0,
         "saved": 0,
         "failed": 0,
@@ -99,6 +101,13 @@ def fetch_source(source: RssSource, article_fetcher: ArticleFetcher | None = Non
         if len(entry.url) > _URL_MAX:
             stats["failed"] += 1
             errors.append(f"{entry.url[:120]}...: URL exceeds {_URL_MAX} characters")
+            continue
+
+        # Before the hash check and before the page fetch: an off-topic item is
+        # not worth a round trip, and it is not worth a row either. The feed
+        # entry's own title and summary are all this decision needs.
+        if not is_ai_related(entry.title, entry.summary, entry.url):
+            stats["filtered"] += 1
             continue
 
         # Guards against the same story appearing twice inside one feed, which
@@ -150,6 +159,7 @@ def fetch_all_enabled(
     totals = {
         "sources": 0,
         "fetched": 0,
+        "filtered": 0,
         "deduped": 0,
         "saved": 0,
         "failed": 0,
@@ -171,22 +181,24 @@ def fetch_all_enabled(
                 "source": source.name,
                 "source_id": source.pk,
                 "fetched": 0,
+                "filtered": 0,
                 "deduped": 0,
                 "saved": 0,
                 "failed": 0,
                 "error": str(exc),
             }
 
-        for key in ("fetched", "deduped", "saved", "failed"):
+        for key in ("fetched", "filtered", "deduped", "saved", "failed"):
             totals[key] += stats[key]
         totals["per_source"].append(stats)
 
     totals["elapsed_ms"] = int((time.monotonic() - started) * 1000)
     logger.info(
-        "Ingest sweep done: %s sources, %s fetched, %s saved, %s deduped, %s failed",
+        "Ingest sweep done: %s sources, %s fetched, %s saved, %s filtered, %s deduped, %s failed",
         totals["sources"],
         totals["fetched"],
         totals["saved"],
+        totals["filtered"],
         totals["deduped"],
         totals["failed"],
     )

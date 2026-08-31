@@ -89,6 +89,10 @@ def _ingest_phase(
         "status": "done",
         "elapsed_ms": totals["elapsed_ms"],
         "fetched": totals["fetched"],
+        # Off-topic items dropped before they cost a page fetch. Worth showing:
+        # on a general-tech feed it is usually the largest number here, and
+        # without it "fetched 60, saved 4" reads like something broke.
+        "filtered": totals["filtered"],
         "deduped": totals["deduped"],
         "saved": totals["saved"],
     }
