@@ -109,6 +109,22 @@ def test_seed_sources_disables_a_retired_source_without_deleting_its_articles():
     assert "- arXiv cs.AI" in output
 
 
+def test_a_source_whose_url_changed_is_retired_under_its_old_url():
+    """Sources are matched on `url`, so a new URL means a new row.
+
+    Found on the live server: swapping 量子位 from its RSSHub route to the
+    site's own /feed created a second row and left the dead one enabled,
+    failing every sweep. Retiring it requires listing the *old* URL.
+    """
+    stale = RssSource.objects.create(name="量子位", url="https://rsshub.app/qbitai/all", enabled=True)
+
+    run("seed_sources")
+
+    stale.refresh_from_db()
+    assert stale.enabled is False
+    assert RssSource.objects.filter(url="https://www.qbitai.com/feed", enabled=True).exists()
+
+
 def test_retirement_is_re_applied_on_every_run():
     """Asymmetric with the enable path on purpose, and worth pinning.
 

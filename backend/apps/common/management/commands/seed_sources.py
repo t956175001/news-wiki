@@ -71,6 +71,16 @@ SOURCES: list[SourceSpec] = [
 # RawArticle they own, taking the existing demo corpus with it.
 RETIRED: list[SourceSpec] = [
     SourceSpec(
+        # Not the same row as the 量子位 above: sources are matched on `url`, so
+        # replacing the URL in SOURCES created a new row and left this one
+        # enabled and failing every sweep. Retiring it by its old URL is what
+        # actually retires it.
+        name="量子位（旧 RSSHub 路由）",
+        url="https://rsshub.app/qbitai/all",
+        site_url="https://www.qbitai.com/",
+        note="停用：已改用站点自有 feed",
+    ),
+    SourceSpec(
         name="机器之心",
         # No feed of its own: /rss 302s to an HTML page, and the public
         # rsshub.app instance answers 403/503. Left disabled rather than
