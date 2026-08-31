@@ -425,6 +425,22 @@ class DailyBrief(models.Model):
 
 节点 `id` 用 `"e"+entity_id` / `"c"+concept_id` 前缀避免撞号。`symbolSize` 由后端算好（建议 `min(60, 12 + value * 2)`）。
 
+**查询参数**（结构不变，以下均为可选，详见 ADR-015）：
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `entity_type` | 全部 | 只保留这些类型的实体节点，逗号分隔可传多个 |
+| `namespace` | 全部 | 只保留这些命名空间的概念节点，逗号分隔可传多个 |
+| `limit` | `150` | 节点数上限，硬上限 500 |
+| `min_degree` | `1` | 最少关系数。默认隐藏孤立节点；传 `0` 显示全部并改用按排名截断 |
+| `center` | — | 邻域图的中心节点 id（如 `e12`）。中心节点必定保留，不存在时返回空图 |
+| `depth` | `1` | 邻域跳数，上限 3。仅在传了 `center` 时生效 |
+
+**选点规则**：超过 `limit` 时按**关系密度**选点——边按两端度数之和排序，
+依次收录端点直到预算用尽，使进入画布的每个节点都至少带一条边。
+`min_degree=0` 或装不下任何一条边时回落为按度数排名截断。
+`truncated=true` 表示发生过截断。
+
 ---
 
 ## 5. LLM 客户端契约
@@ -480,6 +496,9 @@ class LLMClient(Protocol):
 | `LLM_DAILY_BUDGET_CNY` | `5.0` | 熔断阈值 |
 | `DEMO_MODE` | `true` | 开启后写操作走 IP 限流 |
 | `DEMO_WRITE_RATE` | `3/day` | DRF throttle 速率字符串 |
+| `READ_RATE` | `120/min` | 只读接口的每 IP 上限，留空关闭（ADR-015 之外的容量护栏） |
+| `INGEST_TOPIC_FILTER` | `true` | 入库前按 AI 主题关键词过滤，纯 AI 源自动豁免（ADR-016） |
+| `ADMIN_ALLOWED_IPS` | `192.0.2.1` | `/admin/` 的 IP 白名单，**Caddy 层生效**，默认值谁也匹配不到 |
 | `CRON_TOKEN` | — | **必填**，cron 端点鉴权 |
 | `HTTP_PROXY` / `HTTPS_PROXY` | 空 | 可选出站代理，留空即直连 |
 | `CORS_ALLOWED_ORIGINS` | 空 | 同源部署时留空 |

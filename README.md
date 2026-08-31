@@ -23,6 +23,10 @@
 
 news-wiki 换了个思路——**不直接生成文本，而是先做结构化抽取，再把每条结论钉死在原文上**。
 
+数据来自 **国内 AI 资讯平台**（量子位、雷峰网、InfoQ 中文、极客公园、IT 之家、钛媒体），
+入库前先过一层 AI 主题相关性过滤——大部分可用的中文 feed 是泛科技媒体而不是 AI 垂媒，
+过滤放在抓正文之前，被拒的条目连一次页面请求都不花（ADR-016）。
+
 演示数据集（`backend/fixtures/demo.json`，`tests/test_demo_fixture.py` 逐条断言）：**95 篇文章 → 360 个实体 / 219 个概念 / 452 条关系 / 1049 条证据**，证据片段逐字回链原文的比例实测约 99%。上线后 GitHub Actions 每天定时追加一次真实抽取，累计运行数据可在 [/ops](https://newswiki.cn/ops) 页面或 `GET /api/v1/ops/stats/` 实时验证（写下本文时：11 次运行、91% 成功率、累计 149 万 token、总成本 ¥3.55）。
 
 ## 核心特性
@@ -110,9 +114,16 @@ docker compose exec web python manage.py seed_demo
 
 打开 http://localhost:8000 ，API 文档在 http://localhost:8000/api/v1/docs/ 。`seed_demo` 默认从提交的 fixture 秒级灌入演示数据，零 LLM 调用；加 `--live` 才会真实调用 GLM 重新抽取。
 
+## 变更记录
+
+每次改动的「做了什么 + 为什么」记在 [docs/CHANGELOG.md](docs/CHANGELOG.md)；
+为什么这么设计记在 [docs/DECISIONS.md](docs/DECISIONS.md)。
+
+---
+
 ## 设计取舍
 
-这一节从 [docs/DECISIONS.md](docs/DECISIONS.md) 的 14 条 ADR 里挑 5 条最有料的展开——完整列表和每条的代价、面试问法都在那份文档里。
+这一节从 [docs/DECISIONS.md](docs/DECISIONS.md) 的 17 条 ADR 里挑 5 条最有料的展开——完整列表和每条的代价、面试问法都在那份文档里。
 
 ### 为什么云端不跑 Playwright（ADR-001）
 

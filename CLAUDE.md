@@ -119,6 +119,9 @@ cd frontend && npm run lint && npx vue-tsc --noEmit
 - 一个 commit 一件事，不要把 10 个文件的无关改动塞一起
 - commit message 里**不得出现任何公司名**
 - 不要自动 commit。改完告诉用户改了什么，由用户决定何时提交
+- **每次任务做完必须往 `docs/CHANGELOG.md` 追加一条记录**，和本次改动一起提交。
+  写「做了什么 + 为什么」，不写实现细节（细节看代码，设计取舍看 `DECISIONS.md`）。
+  修了 bug 就写清**原来错在哪、为什么一直没被发现**——这份文件的价值在于后来的人能看懂当时的判断。
 
 ---
 
@@ -233,3 +236,14 @@ cd frontend && npm run lint && npx vue-tsc --noEmit
   **`docs/BACKLOG.md`** 补了今天发现的全部条目：三个已修的 bug（含原因分析，不只是"修了"）、echarts 仍卡在 5.6.0 的 XSS 通报未处理、网络失败态英文错误文案未本地化。
   **提交与部署**：三次功能性提交（bundle 体积、移动端布局、部署卷修复）+ 一次文档提交，`check-clean.sh` 全绿后推到 `origin/main`；每次推送都等 CI 绿灯 → `deploy.yml` 自动触发 → 用 `curl` 现查线上文件哈希/体积确认新代码真的生效，不是只看 workflow 显示"success"就当结束（这正是③号 bug 会被继续隐藏下去的方式）。
   **14 天路线图至此全部执行完毕。**
+- **2026-09-01**：D15（路线图之外的加固）。四条主线：可访问性、安全、换国内采集源、图谱与导航。全量 **后端 536 / 前端 60** 测试通过，ruff 与 `check-clean.sh` 全绿。逐条见 `docs/CHANGELOG.md`，取舍见新增的 ADR-015/016/017。
+  **抓到的三个真 bug，都不是靠读代码发现的**：
+  ① **国内访客白屏**：`index.html` 从 D8 起就用**渲染阻塞的 `<link>` 从 `fonts.googleapis.com` 拉字体**，而该域名在中国大陆不可达。一直没被发现，是因为此前所有验证方式都恰好绕开了它——ITDOG 只测首个 HTML 请求，本机 Lighthouse 走代理。改成 `@fontsource*` 打进产物（只引 Latin 子集）。现在首屏零第三方 origin，Playwright 实测 `performance.getEntriesByType('resource')` 全部同源。
+  ② **`/admin/` 对公网开放**（302 到登录页），它是唯一能改写 Prompt 和词条数据的入口。改成 Caddy 层 IP 白名单，未命中返回 **404 而非 403**（403 等于确认这里有东西）。默认值 `192.0.2.1` 是 RFC 5737 TEST-NET，谁也匹配不到；**这个默认值不能省**——环境变量为空时 `remote_ip` 没有参数是配置错误，Caddy 直接起不来。
+  ③ **滚动位置从来没恢复过**：vue-router 的 `savedPosition` 读写 `window.scrollY`，而本项目滚动的是 `.app-shell__content`（shell 是 `100vh + overflow:hidden`），所以那套机制对本项目一直是空转。写了 `useScrollRestoration` 按 `fullPath` 记容器偏移——**第一版仍然不工作**，浏览器实测 400 → 0：目标页面挂载时还在骨架屏状态，容器只有一屏高，`scrollTop = 400` 被静默 clamp 成 0，等数据到了偏移已经「恢复」完了。改成 rAF 重试到值真正生效（带 1.5s 上限，用户滚动即放弃）。**这个 bug 单测发现不了**：jsdom 不做布局，`scrollTop` 在那里是个普通属性，写什么读什么——测试里得手写一个会 clamp 的假容器才能复现。
+  **图谱**（ADR-015）：线上实测默认 `limit=150` 只有 **37 条边、94 个孤立节点**。两层原因，第二层是修完第一层才暴露的：截断按 `mention_count` 排序（演示数据里它几乎恒为 1，等于随机切片）；换成按度数排序后仍有 52/150 个节点没有可见的边——枢纽的叶子邻居被切掉，枢纽自己就没边可画了。最终改成**按边选点**：边按两端度数之和排序，依次收录端点直到预算用尽。同一份数据 **37 → 163 条边、94 → 0 个孤立点**。另加 `min_degree`（默认 1）与 ego 图（`?center=e410&depth=1`），词条页「在图谱中查看」直接跳进来。
+  前端力导向参数原本按节点数**放大**间距，实测 150 节点时整张图溢出画布——方向反了：画布不跟着长，节点越多每个越该挤、gravity 越该大。截图确认后改成反向插值。
+  **采集源**（ADR-016）：换成六个国内源，arXiv/HN/机器之心 **置 disabled 而非删除**（删行会级联删掉演示语料）。顺带订正 D2 的一条过时注释——**量子位是有 feed 的**（`https://www.qbitai.com/feed`），当时写「没有」是从 RSSHub 路由失败推断的，没试过站点自己的路径。新增关键词主题过滤，放在**抓正文之前**（泛科技源大部分条目会被拒，放后面等于每条白花一次请求）。真跑一遍六个源：157 条 → 过滤 49 → 入库 107，正文平均 3878 字。
+  **关键词表是被实测改出来的**：第一版的 `芯片`/`显卡`/`月之暗面` 抓进来的是存储芯片 IPO、HBM3E 量产、**一副叫「月之暗面」的耳机**、手机渲染管线。用这 107 篇真实文章回测后收窄（`芯片`→`AI 芯片`/`算力芯片`，删 `月之暗面`，`rag` 加空格填充免得命中 `fragment`），**多拒 6 篇噪声、零误伤**，并把这四条写成回归用例。
+  **其他**：CSP/HSTS/Permissions-Policy 补齐（HSTS 此前只在 Django 响应上，Caddy 直出的首页没有）；ECharts `tooltip.formatter` 返回值按 HTML 渲染而节点名来自 LLM 抽取的外部文章，统一过 `escapeHtml`；只读接口加 `READ_RATE` 限流；`deploy.yml` 的 action pin 到 commit SHA；新增 `dependabot.yml`、`deploy/backup.sh`（含恢复演练步骤）、**CI 里的 `caddy validate` job**（Caddyfile 写错不会让构建失败，只会让站点下线，而 `deploy.yml` 挂在 CI 结论上，所以只有在 CI 里校验才拦得住）。
+  **本机限制**：Chrome 扩展仍未连接（与 D8-D14 一致）。Playwright 的匹配版本浏览器下载失败，改用早前 session 缓存的 `chromium-1217` 驱动，19 项走查全过、控制台零 error。`docs/CHANGELOG.md` 新建，并在本文件「Git 规范」里定为此后每次任务的必做项。

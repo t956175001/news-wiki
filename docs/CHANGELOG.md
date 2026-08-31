@@ -1,0 +1,113 @@
+# CHANGELOG
+
+本项目所有值得记录的变更都写在这里，最新的在最上面。
+格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
+
+每条只写**做了什么**和**为什么**；实现细节看代码，设计取舍看 `docs/DECISIONS.md`。
+
+---
+
+## [0.2.0] — 2026-09-01
+
+第一次上线后的加固与调整。四条主线：让国内和外企内网的访客真的能打开、
+收窄可被攻击/篡改的面、把采集范围换成国内 AI 资讯、以及让图谱和导航真的可用。
+
+### 可访问性
+
+- **修复国内访客白屏**：`index.html` 一直用**渲染阻塞的 `<link>` 从 `fonts.googleapis.com`
+  拉字体，该域名在中国大陆不可达**，国内访客要等到这个请求超时才看得到内容。
+  改为用 `@fontsource*` 把字体打进产物（只引 Latin 子集，中文本就走系统字体栈）。
+  这个 bug 一直没被发现，是因为此前的验证方式都绕开了它——ITDOG 只测首个 HTML 请求，
+  本机 Lighthouse 走代理。
+- **Swagger UI 自托管**：`/api/v1/docs/` 原本从 `cdn.jsdelivr.net/...@latest/` 加载，
+  既在国内不稳定，又是一条无版本锁、无 SRI 的供应链。改用 `drf-spectacular-sidecar`。
+- 首屏现在**零第三方 origin**（Playwright 实测 `performance.getEntriesByType('resource')` 全部同源）。
+- 补 `meta description` / Open Graph / `canonical` / `robots.txt` / `sitemap.xml`——
+  被正常收录是企业 URL 过滤厂商给出分类的主要依据之一。
+- 加 `<noscript>` 兜底：禁用 JS 的受限浏览器至少能看到项目简介和 GitHub 链接。
+- 新增 `docs/ACCESS.md`：外企内网拦截的风险分析、各 URL 过滤厂商的分类申请入口、自查清单。
+
+### 安全
+
+- **`/admin/` 不再对公网开放**。它是唯一能改写 Prompt 和词条数据的入口，此前对全网 302 到登录页。
+  改为 Caddy 层 IP 白名单（`ADMIN_ALLOWED_IPS`），未命中返回 **404 而非 403**——403 等于确认这里有东西。
+  默认值 `192.0.2.1`（RFC 5737 TEST-NET）谁也匹配不到。
+- **补齐安全响应头**：CSP（`default-src 'self'`）、Permissions-Policy、COOP，
+  并把 HSTS 提到 Caddy 层——此前它只出现在 Django 自己的响应上，Caddy 直出的 SPA 首页没有。
+- **修一条可达的存储型 XSS 路径**：ECharts 的 `tooltip.formatter` 返回值按 HTML 渲染，
+  而节点名/谓词是 LLM 从**外部抓取的文章**里抽出来的。现在统一走 `escapeHtml`，CSP 是第二层。
+- 只读接口加匿名限流（`READ_RATE`，默认 120/min）。此前只有写接口有配额，
+  `/wiki/graph/?limit=500` 可以被无限次打。Caddy 层同时加 1MB 请求体上限。
+- CI/CD 收紧：三个 workflow 都加 `permissions: contents: read`；
+  `appleboy/ssh-action` 从 tag 改为 pin commit SHA（公开仓库 + 持有 VPS 私钥）；
+  新增 `dependabot.yml` 与一个**不阻断**的依赖审计 job。
+- **新增 Caddyfile 校验 job**：Caddyfile 写错不会让构建失败，只会让容器起不来、站点直接挂掉。
+  `deploy.yml` 挂在 CI 结论上，所以在 CI 里 `caddy validate` 才拦得住。
+- 新增 `deploy/backup.sh`：每晚 `pg_dump`，保留 7 份，空转储不轮换。恢复步骤写进 `DEPLOYMENT.md`。
+
+### 采集
+
+- **采集源换成国内 AI 资讯平台**：启用量子位、雷峰网、InfoQ 中文、极客公园、IT 之家、钛媒体
+  （六个 feed 均实测可用）。arXiv / Hacker News / 机器之心**置为 disabled 而非删除**——
+  删行会级联删掉它们名下的全部文章，把现有演示语料一起带走。
+  顺带订正一条过时注释：**量子位是有 feed 的**（`https://www.qbitai.com/feed`），
+  D2 写「没有」是从 RSSHub 路由失败推断的，没试过站点自己的路径。
+- **新增主题相关性过滤**（`apps/ingest/services/relevance.py`）：
+  可用的中文源多是泛科技媒体，不是 AI 垂媒。关键词过滤放在**抓正文之前**，
+  被拒的条目不花页面请求；纯 AI 站走白名单，不做关键词判断。
+  实跑一遍六个源：157 条 → 过滤 49 → 入库 107。
+- 关键词表经真实语料回测收窄：`芯片`/`显卡`/`月之暗面` 抓进来的是存储芯片 IPO、
+  一副叫「月之暗面」的耳机、手机渲染管线。改完多拒 6 篇噪声，**零误伤**。
+
+### 图谱
+
+- **默认视图从「一团散点」变成可读的关系网**。线上实测默认 `limit=150` 只有
+  **37 条边、94 个孤立节点**。两层原因：截断按 `mention_count` 排序（演示数据里它几乎恒为 1，
+  等于随机切片），以及只换排序键仍不够——枢纽的叶子邻居被切掉后，枢纽自己也没边可画。
+  改为**按边选点**：边按两端度数排序，依次收录端点直到预算用尽。
+  同一份数据：`limit=150` 从 37 条边 / 94 孤立点变成 **163 条边 / 0 孤立点**。
+- 新增 `min_degree`（默认 1，隐藏孤立节点；传 0 恢复旧行为）。
+- **新增 ego 图**：`?center=e410&depth=1`，只看某个节点的关系网络。
+  词条页加「在图谱中查看」直接跳进来——全局图无论怎么选点都难读，以一个词条为中心的网是可读的。
+- 前端观感：标签按度数分级（只有枢纽常驻显示，其余 hover 显示），
+  力导向参数随节点数自适应，hover 高亮邻域并显示谓词，加「重新布局」按钮。
+
+### 交互
+
+- **加返回键**（`PageBack.vue`）。站内有历史时走 `router.back()`，
+  直接打开链接时回退到兜底路由——只写 `router.back()` 的话，从分享链接进来点了没反应。
+- **列表状态进 URL**：词条库的搜索/类型/排序/页码、图谱的全部筛选、简报的日期，
+  现在都写在 query 里。返回时筛选条件原样还在，链接也可以分享。
+- **修复滚动位置不恢复**：vue-router 的 `savedPosition` 读写 `window.scrollY`，
+  而本项目滚动的是 `.app-shell__content`，所以它从来没生效过——
+  从词条页返回列表永远回到顶部。新增 `useScrollRestoration` 按 `fullPath` 记录容器偏移。
+- 每个路由有自己的 `document.title`（此前五个页面共用一个）。
+- 网络层失败不再直接显示浏览器原生英文（`Network Error`），统一成中文文案，
+  并区分超时 / 连不上 / 服务端非标准错误三种情况。
+
+### 文档
+
+- 新增本文件，并在 `CLAUDE.md` 里定为每次任务完成后的必做项。
+- `docs/DECISIONS.md` 新增 ADR-015（图谱选点）、ADR-016（国内选源与主题过滤）、
+  ADR-017（前端零第三方依赖）。
+- `docs/ARCHITECTURE.md` §4.2、§7 与 `docs/DEPLOYMENT.md` 同步；
+  `docs/BACKLOG.md` 勾掉已修项。
+
+### 测试
+
+- 后端 488 → **536**，前端 39 → **60**。新增覆盖：主题过滤（含真实语料回测出的误判用例）、
+  只读限流、图谱选点/`min_degree`/ego 图、tooltip 转义、返回键、滚动恢复、网络错误文案。
+
+---
+
+## [0.1.0] — 2026-08-30
+
+14 天路线图（D1–D14）完成，首次上线 <https://newswiki.cn>。
+
+- RSS 采集 → LLM 三阶段结构化抽取（实体 → 概念 → 关系）→ 每日简报的完整管线
+- 每条论断挂原文证据片段 + 来源链接 + 置信度 + prompt 版本 + run_id
+- 词条页 / 关系图谱 / 每日简报 / 流水线可观测面板四个页面
+- Docker Compose（Caddy + Gunicorn + Postgres）部署，GitHub Actions CI/CD 与每日 cron
+- 14 条 ADR、演示数据 fixture、README 与演示视频
+
+详见 `CLAUDE.md` 的「当前状态」与 `docs/ROADMAP.md`。

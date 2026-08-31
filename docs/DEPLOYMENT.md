@@ -90,40 +90,32 @@ dig +short news-wiki.<你的域名>     # 应返回 VPS 的 IP，不是 Cloudfla
 
 ### `deploy/Caddyfile`
 
-```caddyfile
-{$SITE_DOMAIN} {
-    encode gzip zstd
+**以仓库里的 `deploy/Caddyfile` 为准**，这里只说明为什么它长成那样（完整取舍见 ADR-017）：
 
-    # API 反代到 gunicorn
-    handle /api/* {
-        reverse_proxy web:8000
-    }
-    handle /admin/* {
-        reverse_proxy web:8000
-    }
-    handle /static/* {
-        reverse_proxy web:8000
-    }
+- **`/admin/` 走 IP 白名单**（`@admin_allowed remote_ip {$ADMIN_ALLOWED_IPS:192.0.2.1}`），
+  未命中返回 **404 而不是 403**——403 等于告诉扫描器「这里有东西」。
+  白名单默认值是 RFC 5737 的 TEST-NET 地址，即默认对公网关闭。
+  **`:192.0.2.1` 这个默认值不能省**：环境变量未设置时 `remote_ip` 会没有参数，
+  那是配置错误，Caddy 直接起不来，整站会挂。
+- **HSTS 写在 Caddy 层**。Django 也设了这个头，但只对它自己返回的响应生效，
+  而 SPA 首页是 Caddy 直出的——此前首页一直没有 HSTS。
+- **CSP 分两条**：`@not_docs` 用 `default-src 'self'`，
+  `@docs`（`/api/v1/docs/`）单独放宽 `script-src` 到 `'unsafe-inline'`，
+  因为 drf-spectacular 的 Swagger 模板带内联引导脚本。
+  `style-src` 两条都保留 `'unsafe-inline'`：ant-design-vue v4 用 cssinjs 运行时注入样式，
+  静态 SPA 没有下发 nonce 的地方。
+- `/api/*` 带 `request_body { max_size 1MB }`。
 
-    # 其余交给前端 SPA
-    handle {
-        root * /srv/frontend
-        try_files {path} /index.html
-        file_server
-    }
+**改完必须先校验再推**，配置错了不是构建失败而是站点直接下线：
 
-    header {
-        X-Content-Type-Options nosniff
-        X-Frame-Options DENY
-        Referrer-Policy strict-origin-when-cross-origin
-        -Server
-    }
-
-    log {
-        output file /var/log/caddy/access.log
-    }
-}
+```bash
+docker run --rm -e SITE_DOMAIN=example.com -e ADMIN_ALLOWED_IPS=192.0.2.1   -v "$PWD/deploy/Caddyfile:/etc/caddy/Caddyfile:ro"   caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 ```
+
+CI 里有同样的 `caddyfile` job，`deploy.yml` 挂在 CI 结论上，所以这一步是有人兜底的。
+
+**临时进后台的办法**：把自己的出口 IP（`curl ifconfig.me`）填进 VPS 上 `.env` 的
+`ADMIN_ALLOWED_IPS`，`docker compose up -d caddy` 生效，用完改回 `192.0.2.1`。
 
 ### `deploy/docker-compose.prod.yml`
 
@@ -373,11 +365,38 @@ $C logs -f caddy                         # 证书/访问日志
 $C restart web                           # 重启后端
 $C exec web python manage.py shell       # Django shell
 
-# 数据库备份（建议加进 crontab 每日执行）
-$C exec -T db pg_dump -U newswiki newswiki | gzip > ~/backup/db-$(date +%F).sql.gz
+```
 
-# 恢复
-gunzip -c ~/backup/db-2026-09-11.sql.gz | $C exec -T db psql -U newswiki newswiki
+### 备份与恢复
+
+用 `deploy/backup.sh`，不要手敲 `pg_dump`——脚本会在转储明显过小时**拒绝轮换**，
+免得一次失败的备份把最后一份好的挤掉。
+
+```bash
+# 安装（deploy 用户）
+crontab -e
+17 3 * * *  /home/deploy/news-wiki/deploy/backup.sh >> /home/deploy/backups/backup.log 2>&1
+
+# 手动跑一次确认
+~/news-wiki/deploy/backup.sh && ls -la ~/backups/
+```
+
+**恢复演练**（只写备份不写恢复等于没有备份，上线后至少走一遍）：
+
+```bash
+cd ~/news-wiki/deploy
+C="docker compose -f docker-compose.prod.yml --env-file ../.env"
+
+# 1. 先建一个空库，恢复到它，确认转储是完整的 —— 不要直接往生产库上灌
+$C exec -T db createdb -U newswiki restore_test
+gunzip -c ~/backups/newswiki-YYYYMMDD-HHMMSS.sql.gz | $C exec -T db psql -U newswiki restore_test
+$C exec -T db psql -U newswiki restore_test -c "select count(*) from wiki_evidence;"
+
+# 2. 确认无误后再覆盖生产库（转储是 --clean --if-exists，可直接重放）
+gunzip -c ~/backups/newswiki-YYYYMMDD-HHMMSS.sql.gz | $C exec -T db psql -U newswiki newswiki
+
+# 3. 清理演练库
+$C exec -T db dropdb -U newswiki restore_test
 ```
 
 **磁盘监控**：轻量服务器盘小，日志和镜像容易吃满。
