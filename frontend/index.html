@@ -4,16 +4,42 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap"
-      rel="stylesheet"
-    />
+    <meta name="theme-color" content="#1e2024" />
     <title>news-wiki · 每日 AI 资讯维基</title>
+    <meta
+      name="description"
+      content="每天自动采集国内 AI 资讯，用 LLM 三阶段结构化抽取生成可溯源的资讯维基：每条论断都挂着原文证据片段、来源链接和置信度。"
+    />
+    <link rel="canonical" href="https://newswiki.cn/" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="news-wiki" />
+    <meta property="og:url" content="https://newswiki.cn/" />
+    <meta property="og:title" content="news-wiki · 可溯源的每日 AI 资讯维基" />
+    <meta
+      property="og:description"
+      content="RSS 采集 → LLM 三步抽取（实体/概念/关系）→ 每条结论回链原文证据。Django + Vue 3 全栈演示项目。"
+    />
+    <meta property="og:image" content="https://newswiki.cn/og-cover.png" />
+    <meta name="twitter:card" content="summary_large_image" />
   </head>
   <body>
-    <div id="app"></div>
+    <div id="app">
+      <!-- Rendered only when scripts are blocked — locked-down corporate browsers
+           and crawlers get real text instead of an empty <div>. -->
+      <noscript>
+        <h1>news-wiki · 每日 AI 资讯维基</h1>
+        <p>
+          每天自动采集国内 AI 资讯，用 LLM 三阶段结构化抽取（实体 → 概念 →
+          关系）生成可溯源的资讯维基。每条论断都挂着原文证据片段、来源链接与置信度。
+        </p>
+        <p>本站是单页应用，需要启用 JavaScript 才能浏览。你也可以直接查看：</p>
+        <ul>
+          <li><a href="https://github.com/t956175001/news-wiki">GitHub 源码与项目说明</a></li>
+          <li><a href="/api/v1/docs/">API 文档（OpenAPI）</a></li>
+          <li><a href="/api/v1/brief/latest/">最新一期简报（JSON）</a></li>
+        </ul>
+      </noscript>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

@@ -2,6 +2,11 @@ django>=5.0,<5.1
 djangorestframework
 django-filter
 drf-spectacular
+# Ships the Swagger UI assets so /api/v1/docs/ does not load them from
+# cdn.jsdelivr.net at `@latest` — that was an unpinned, unverified third party
+# executing scripts on our own origin, and an unreachable host for visitors in
+# mainland China.
+drf-spectacular-sidecar
 django-cors-headers
 whitenoise
 python-dotenv

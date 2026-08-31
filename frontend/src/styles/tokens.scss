@@ -102,9 +102,14 @@ $cat-other: #6b7078;
   --radius-pill: 999px;
 
   // typography
-  --font-display: 'Fraunces', 'Noto Serif SC', serif;
-  --font-body: 'IBM Plex Sans', 'Noto Sans SC', sans-serif;
-  --font-mono: 'IBM Plex Mono', 'Noto Sans SC', monospace;
+  // 'Fraunces Variable' is the family name @fontsource-variable publishes; the
+  // static 'Fraunces' is kept after it for anyone who has it installed locally.
+  // The three bundled faces are Latin-only, so every stack ends with real
+  // system CJK families — 'Noto * SC' alone was a no-op on machines without it,
+  // which is most Windows and macOS machines.
+  --font-display: 'Fraunces Variable', 'Fraunces', 'Songti SC', 'Noto Serif SC', serif;
+  --font-body: 'IBM Plex Sans', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', sans-serif;
+  --font-mono: 'IBM Plex Mono', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', monospace;
 
   // layout
   --sider-width: 232px;

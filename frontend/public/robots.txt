@@ -1,0 +1,8 @@
+# Indexing is wanted here: an uncategorised domain is what corporate URL
+# filters block by default, and being crawled is the cheapest way to acquire a
+# category. /admin/ is IP-restricted at the edge anyway (deploy/Caddyfile).
+User-agent: *
+Allow: /
+Disallow: /admin/
+
+Sitemap: https://newswiki.cn/sitemap.xml

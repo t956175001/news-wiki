@@ -46,6 +46,9 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "whitenoise.runserver_nostatic",
+    # Must precede staticfiles: that is how its bundled Swagger UI assets get
+    # picked up by collectstatic and served by whitenoise.
+    "drf_spectacular_sidecar",
     "django.contrib.staticfiles",
     # Third-party
     "rest_framework",
@@ -145,6 +148,10 @@ REST_FRAMEWORK = {
     ],
     "EXCEPTION_HANDLER": "apps.common.drf_exceptions.custom_exception_handler",
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+    # Applies to every endpoint that does not declare its own. The two that do
+    # — `ExtractView` (DemoWriteThrottle) and `cron_daily` (exempt) — replace
+    # this list rather than adding to it, which is the intent in both cases.
+    "DEFAULT_THROTTLE_CLASSES": ["apps.common.throttling.ReadRateThrottle"],
 }
 
 SPECTACULAR_SETTINGS = {
@@ -153,6 +160,10 @@ SPECTACULAR_SETTINGS = {
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
     "SCHEMA_PATH_PREFIX": "/api/v1",
+    # Serve Swagger UI from our own origin instead of jsdelivr's `@latest`.
+    # See the note next to drf-spectacular-sidecar in requirements.txt.
+    "SWAGGER_UI_DIST": "SIDECAR",
+    "SWAGGER_UI_FAVICON_HREF": "SIDECAR",
 }
 
 # --- CORS ---------------------------------------------------------------
@@ -196,10 +207,18 @@ LLM_TIMEOUT_SECONDS = float(os.environ.get("LLM_TIMEOUT_SECONDS", "300"))
 EXTRACT_BATCH_SIZE = int(os.environ.get("EXTRACT_BATCH_SIZE", "5"))
 EXTRACT_CONTENT_LIMIT = int(os.environ.get("EXTRACT_CONTENT_LIMIT", "4000"))
 
+# --- Ingest -------------------------------------------------------------
+
+# Most usable Chinese feeds are general tech desks, not AI ones. Off means every
+# item in every enabled feed is ingested. See apps/ingest/services/relevance.py.
+INGEST_TOPIC_FILTER = _bool("INGEST_TOPIC_FILTER", True)
+
 # --- Demo guard rails ---------------------------------------------------
 
 DEMO_MODE = _bool("DEMO_MODE", True)
 DEMO_WRITE_RATE = os.environ.get("DEMO_WRITE_RATE", "3/day")
+# Per-IP ceiling on the read API. Empty disables it. See ReadRateThrottle.
+READ_RATE = os.environ.get("READ_RATE", "120/min").strip()
 
 # --- Cron ---------------------------------------------------------------
 
