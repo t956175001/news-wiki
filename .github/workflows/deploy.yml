@@ -31,4 +31,10 @@ jobs:
             cd deploy
             docker compose -f docker-compose.prod.yml --env-file ../.env up -d --build
             docker compose -f docker-compose.prod.yml exec -T web python manage.py migrate --noinput
+            # The feed list is configuration that lives in code, so it has to be
+            # applied like code. Without this, editing seed_sources.py changed
+            # nothing in production and the deploy still reported success.
+            # Idempotent by design: it only creates missing sources, repairs
+            # names, and disables the ones listed as retired.
+            docker compose -f docker-compose.prod.yml exec -T web python manage.py seed_sources
             docker image prune -f
