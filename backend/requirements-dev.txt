@@ -8,4 +8,4 @@ model-bakery
 
 # Pinned: `ruff format --check` is a CI gate, and formatting changes between
 # minor releases would break the build without a code change.
-ruff==0.14.5
+ruff==0.16.5
