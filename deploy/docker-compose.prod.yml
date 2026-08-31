@@ -57,6 +57,11 @@ services:
       - "443:443"
     environment:
       SITE_DOMAIN: ${SITE_DOMAIN}
+      # Caddy only sees what is listed here — `env_file` is not in play for
+      # this service. Without this line the Caddyfile's allowlist would always
+      # fall back to its unreachable default and /admin/ could never be opened.
+      # `:-` so an unset variable is still a valid (closed) config.
+      ADMIN_ALLOWED_IPS: ${ADMIN_ALLOWED_IPS:-192.0.2.1}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - frontend_dist:/srv/frontend:ro
