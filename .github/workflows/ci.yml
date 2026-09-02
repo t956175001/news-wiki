@@ -61,6 +61,15 @@ jobs:
       - name: ruff format --check
         run: ruff format --check .
 
+      # pytest builds its schema with `migrate --run-syncdb`-style shortcuts and
+      # never replays data migrations, so a migration can be green here and
+      # still fail on the server. One did: `AddConstraint` after a RunPython
+      # that deletes rows raises `cannot ALTER TABLE ... pending trigger events`
+      # on PostgreSQL and nowhere else. This step runs the real thing against
+      # the real engine.
+      - name: migrate (the deploy path, on PostgreSQL)
+        run: python manage.py migrate --noinput
+
       - name: pytest
         run: pytest -q
 

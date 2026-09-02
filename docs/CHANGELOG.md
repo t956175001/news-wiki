@@ -34,6 +34,18 @@
   最旧的那批按构造永远排不到。超过 14 天仍 `pending` 的置为 `skipped`，
   `pending` 从此表示「打算做还没做」而不是「永远不会办」。
 
+### 部署与 CI（这次上线踩出来的）
+
+- **迁移里的 `AddConstraint` 拆成单独一个迁移**。原来「删约束 → 合并数据 → 加约束」在同一个事务里，
+  PostgreSQL 拒绝对still有未决触发器事件的表做 `ALTER TABLE`——而删行加重挂外键正好会留下一堆。
+  报错 `cannot ALTER TABLE "wiki_entity" because it has pending trigger events`。
+  **本地 SQLite 和数据副本演练都是绿的，只有生产会炸**；整个迁移是原子的，回滚后数据未受损。
+- **`deploy.yml` 补 `set -e`**。此前脚本会越过失败的 `migrate` 继续往下跑，
+  任务照样报 success——绿勾配着一个坏掉的站点。和 D14 那个「部署报成功但前端产物根本没上线」是同一种病。
+- **CI 增加一步「对着 PostgreSQL 真跑一遍 `migrate`」**。pytest 建表走的是自己的捷径，
+  从不重放数据迁移，所以迁移可以在 CI 全绿、到服务器上才失败。这一步就是补这个洞。
+- 另外记一笔：一次部署因服务器 OOM 被 SIGKILL（`exit 137`），重跑即过，已记入 BACKLOG。
+
 ### 交互
 
 - **「流水线」改称「工作流」**。侧边栏、页头、页面标题、证据卡的跳转提示与 API 文档一并改；
