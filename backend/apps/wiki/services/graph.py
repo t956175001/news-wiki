@@ -16,10 +16,12 @@ version shipped a canvas that was 63% dots with no lines (see ADR-015):
 """
 
 import logging
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Iterable
+from datetime import timedelta
 
-from django.db.models import Count, Q
+from django.db.models import Max, Q
+from django.utils import timezone
 
 from apps.wiki.models import Concept, Entity, Linkage
 
@@ -41,6 +43,23 @@ DEFAULT_MIN_DEGREE = 1
 DEFAULT_DEPTH = 1
 MAX_DEPTH = 3
 
+# Predicates hidden unless the caller asks for them back. `涉及` is the only one
+# here and it earned its place empirically: on the live graph it labelled 17% of
+# all edges (99 of 583), and "A is involved with B" is the absence of a relation
+# rather than one — it is what the model reaches for when it has nothing
+# specific to say. See ADR-019.
+DEFAULT_EXCLUDED_PREDICATES: tuple[str, ...] = ("涉及",)
+
+# How far back the graph looks, in days. 0 means the whole history.
+#
+# Without a window this graph is cumulative: it grows by roughly nine nodes per
+# extracted article and nothing ever leaves, so over months the same all-time
+# hubs crowd out whatever happened this week. The window is measured on the
+# *article's* publish time, not on when extraction happened — the backlog is
+# drained newest-first and can run days behind, so `Linkage.created_at` would
+# report a two-month-old story as today's news. See ADR-019.
+DEFAULT_DAYS = 30
+
 
 def symbol_size(value: int) -> int:
     return min(MAX_SIZE, BASE_SIZE + value * SIZE_PER_RELATION)
@@ -51,62 +70,100 @@ def node_id(prefix: str, pk: int) -> str:
     return f"{prefix}{pk}"
 
 
-def _entity_nodes(entity_types: list[str] | None) -> list[dict]:
-    """Entities with their relation degree, ranked by that degree."""
+def _degrees(edges: Iterable[dict]) -> Counter:
+    """How many *visible* edges each node has.
+
+    Counted from the filtered edge list rather than from the database, because
+    `value` is what sizes a node and what the Top-N cut ranks on. Reading it off
+    the full table while drawing a filtered graph would render a node fat and
+    important-looking with a single line attached to it.
+    """
+    degrees: Counter = Counter()
+    for edge in edges:
+        degrees[edge["source"]] += 1
+        degrees[edge["target"]] += 1
+    return degrees
+
+
+def _entity_nodes(entity_types: list[str] | None, degrees: Counter) -> list[dict]:
+    """Entities with their visible relation degree, ranked by that degree."""
     queryset = Entity.objects.all()
     if entity_types:
         queryset = queryset.filter(entity_type__in=entity_types)
 
-    queryset = queryset.annotate(
-        degree=Count("outgoing_linkages", distinct=True) + Count("incoming_linkages", distinct=True)
-    ).order_by("-degree", "-mention_count", "normalized_name")
+    nodes = []
+    for entity in queryset.only("pk", "name", "entity_type", "mention_count", "normalized_name"):
+        identifier = node_id(ENTITY_PREFIX, entity.pk)
+        degree = degrees[identifier]
+        nodes.append(
+            {
+                "id": identifier,
+                "name": entity.name,
+                "category": entity.entity_type,
+                "value": degree,
+                "symbolSize": symbol_size(degree),
+                # Not serialised: the keys the Top-N cut is made on. Degree first —
+                # this is a relation graph, so how connected a node is *is* how
+                # important it is here. mention_count only breaks ties.
+                "_rank": (degree, entity.mention_count),
+            }
+        )
+    nodes.sort(key=lambda node: (-node["_rank"][0], -node["_rank"][1], node["name"]))
+    return nodes
 
-    return [
-        {
-            "id": node_id(ENTITY_PREFIX, entity.pk),
-            "name": entity.name,
-            "category": entity.entity_type,
-            "value": entity.degree,
-            "symbolSize": symbol_size(entity.degree),
-            # Not serialised: the keys the Top-N cut is made on. Degree first —
-            # this is a relation graph, so how connected a node is *is* how
-            # important it is here. mention_count only breaks ties.
-            "_rank": (entity.degree, entity.mention_count),
-        }
-        for entity in queryset
-    ]
 
-
-def _concept_nodes(namespaces: list[str] | None) -> list[dict]:
+def _concept_nodes(namespaces: list[str] | None, degrees: Counter) -> list[dict]:
     """Concepts ranked by degree — they have no mention_count to rank by."""
     queryset = Concept.objects.all()
     if namespaces:
         queryset = queryset.filter(namespace__in=namespaces)
 
-    queryset = queryset.annotate(degree=Count("linkages", distinct=True)).order_by("-degree", "name")
+    nodes = []
+    for concept in queryset.only("pk", "name", "namespace"):
+        identifier = node_id(CONCEPT_PREFIX, concept.pk)
+        degree = degrees[identifier]
+        nodes.append(
+            {
+                "id": identifier,
+                "name": concept.name,
+                "category": concept.namespace,
+                "value": degree,
+                "symbolSize": symbol_size(degree),
+                "_rank": (degree, 0),
+            }
+        )
+    nodes.sort(key=lambda node: (-node["_rank"][0], node["name"]))
+    return nodes
 
-    return [
-        {
-            "id": node_id(CONCEPT_PREFIX, concept.pk),
-            "name": concept.name,
-            "category": concept.namespace,
-            "value": concept.degree,
-            "symbolSize": symbol_size(concept.degree),
-            "_rank": (concept.degree, 0),
-        }
-        for concept in queryset
-    ]
 
-
-def _all_edges() -> list[dict]:
-    """Every relation that has an object, as ECharts links.
+def _all_edges(exclude_predicates: Iterable[str], days: int) -> list[dict]:
+    """Relations that have an object, a predicate worth drawing, and a source
+    recent enough to still count.
 
     One query. The graph is small enough (hundreds of edges) that filtering in
     Python beats issuing a query per selection rule.
     """
-    linkages = Linkage.objects.filter(
-        Q(object_entity__isnull=False) | Q(object_concept__isnull=False)
-    ).values("subject_entity_id", "predicate", "object_entity_id", "object_concept_id", "confidence")
+    queryset = Linkage.objects.filter(Q(object_entity__isnull=False) | Q(object_concept__isnull=False))
+
+    excluded = {predicate for predicate in exclude_predicates}
+    if excluded:
+        queryset = queryset.exclude(predicate__in=excluded)
+
+    if days > 0:
+        cutoff = timezone.now() - timedelta(days=days)
+        # Latest source, so one recent article keeps a relation current even
+        # when its other sources are old. `isnull` covers the two undateable
+        # cases — no evidence at all, or evidence on articles that arrived
+        # without a parseable date — and those are *kept*: the window exists to
+        # retire old news, not to hide relations whose age cannot be
+        # established. Only provably stale edges come out.
+        queryset = queryset.annotate(latest_source=Max("evidences__raw_article__publish_time")).filter(
+            Q(latest_source__gte=cutoff) | Q(latest_source__isnull=True)
+        )
+
+    linkages = queryset.values(
+        "subject_entity_id", "predicate", "object_entity_id", "object_concept_id", "confidence"
+    ).distinct()  # the evidence join multiplies rows; one relation is one edge
 
     edges = []
     for linkage in linkages:
@@ -228,6 +285,8 @@ def build_graph(
     min_degree: int = DEFAULT_MIN_DEGREE,
     center: str | None = None,
     depth: int = DEFAULT_DEPTH,
+    exclude_predicate: list[str] | None = None,
+    days: int = DEFAULT_DAYS,
 ) -> dict:
     """The whole graph payload in four queries, whatever the graph's size.
 
@@ -246,13 +305,26 @@ def build_graph(
     degree is below `min_degree` — the caller asked for that node by name.
     An unknown centre yields an empty graph rather than an error, so a deep
     link to an entry that was later merged away degrades quietly.
+
+    `exclude_predicate` drops edges by predicate; `None` means the default set
+    (see `DEFAULT_EXCLUDED_PREDICATES`), an empty list means keep everything.
+    Degrees are then counted from what is left, so hiding a predicate shrinks
+    the nodes that hung off it and can drop them entirely.
+
+    `days` keeps only relations backed by an article published within that many
+    days; 0 lifts the window entirely. Same rule as above — degrees follow the
+    surviving edges, so an entity whose news has aged out leaves the canvas
+    rather than sitting there as a dot.
     """
     limit = max(1, min(limit, MAX_LIMIT))
     min_degree = max(0, min_degree)
     depth = max(1, min(depth, MAX_DEPTH))
+    days = max(0, days)
+    excluded = DEFAULT_EXCLUDED_PREDICATES if exclude_predicate is None else exclude_predicate
 
-    nodes = _entity_nodes(entity_type) + _concept_nodes(namespace)
-    edges = _all_edges()
+    edges = _all_edges(excluded, days)
+    degrees = _degrees(edges)
+    nodes = _entity_nodes(entity_type, degrees) + _concept_nodes(namespace, degrees)
 
     if center is not None:
         keep = _neighbourhood(edges, center, depth)

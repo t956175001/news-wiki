@@ -35,7 +35,9 @@ from apps.wiki.serializers import (
 )
 from apps.wiki.services.extract_pipeline import run_extraction, start_run
 from apps.wiki.services.graph import (
+    DEFAULT_DAYS,
     DEFAULT_DEPTH,
+    DEFAULT_EXCLUDED_PREDICATES,
     DEFAULT_LIMIT,
     DEFAULT_MIN_DEGREE,
     MAX_DEPTH,
@@ -162,6 +164,25 @@ class GraphView(APIView):
                 OpenApiTypes.INT,
                 description=f"邻域跳数，默认 {DEFAULT_DEPTH}，上限 {MAX_DEPTH}。仅在传了 center 时生效。",
             ),
+            OpenApiParameter(
+                "days",
+                OpenApiTypes.INT,
+                description=(
+                    f"只保留最近这么多天的关系，默认 {DEFAULT_DAYS}；传 0 取全部历史。"
+                    "按**文章发布时间**算，不是抽取时间——积压是倒序消化的，"
+                    "抽取时间会把两个月前的旧闻算成今天的新闻。"
+                ),
+            ),
+            OpenApiParameter(
+                "exclude_predicate",
+                OpenApiTypes.STR,
+                description=(
+                    "隐藏这些谓词的边，逗号分隔可传多个。"
+                    f"默认 `{','.join(DEFAULT_EXCLUDED_PREDICATES)}`；"
+                    "传空值（`exclude_predicate=`）则不隐藏任何谓词。"
+                    "边被隐藏后节点度数会跟着重算，只剩孤立点的节点会一并消失。"
+                ),
+            ),
         ],
         responses={200: GraphSerializer},
     )
@@ -175,6 +196,8 @@ class GraphView(APIView):
                 min_degree=_int_param(request, "min_degree", DEFAULT_MIN_DEGREE),
                 center=center,
                 depth=_int_param(request, "depth", DEFAULT_DEPTH),
+                exclude_predicate=_optional_list_param(request, "exclude_predicate"),
+                days=_int_param(request, "days", DEFAULT_DAYS),
             )
         )
 
@@ -186,6 +209,19 @@ def _list_param(request: Request, name: str) -> list[str] | None:
         return None
     values = [item.strip() for item in raw.split(",") if item.strip()]
     return values or None
+
+
+def _optional_list_param(request: Request, name: str) -> list[str] | None:
+    """Like `_list_param`, but tells "absent" apart from "present and empty".
+
+    Needed where the default is a non-empty set: `exclude_predicate=` has to be
+    able to mean "hide nothing", which `_list_param` would report as `None` —
+    indistinguishable from the caller never mentioning the parameter.
+    """
+    raw = request.query_params.get(name)
+    if raw is None:
+        return None
+    return [item.strip() for item in raw.split(",") if item.strip()]
 
 
 def _int_param(request: Request, name: str, default: int) -> int:

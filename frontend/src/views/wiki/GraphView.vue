@@ -26,6 +26,17 @@ const DEPTH_OPTIONS = [
   { value: 1, label: '直接关系' },
   { value: 2, label: '两跳以内' },
 ]
+// Mirrors the API's own default (graph.py::DEFAULT_EXCLUDED_PREDICATES). `涉及`
+// labelled 17% of the live graph's edges and asserts nothing; see ADR-019.
+const DEFAULT_HIDDEN_PREDICATES = ['涉及']
+// Mirrors graph.py::DEFAULT_DAYS. 0 is "all of it".
+const DEFAULT_DAYS = 30
+const DAYS_OPTIONS = [
+  { value: 7, label: '近 7 天' },
+  { value: 30, label: '近 30 天' },
+  { value: 90, label: '近 90 天' },
+  { value: 0, label: '全部历史' },
+]
 
 const route = useRoute()
 const router = useRouter()
@@ -40,8 +51,11 @@ const nodeLimit = ref(DEFAULT_NODE_LIMIT)
 const connectedOnly = ref(true)
 const center = ref<string | null>(null)
 const depth = ref(1)
+const hiddenPredicates = ref<string[]>([...DEFAULT_HIDDEN_PREDICATES])
+const days = ref(DEFAULT_DAYS)
 
 const namespaceOptions = ref<{ value: string; label: string }[]>([])
+const predicateOptions = ref<{ value: string; label: string }[]>([])
 const centerName = ref('')
 
 const loading = ref(true)
@@ -63,6 +77,22 @@ function readQuery() {
   connectedOnly.value = query.min_degree !== '0'
   center.value = typeof query.center === 'string' && query.center ? query.center : null
   depth.value = Number(query.depth) || 1
+  // Absent means the default; present-but-empty means "hide nothing". Reading
+  // both as [] would make it impossible to turn the default off.
+  hiddenPredicates.value =
+    typeof query.exclude_predicate === 'string'
+      ? asList(query.exclude_predicate)
+      : [...DEFAULT_HIDDEN_PREDICATES]
+  // `days=0` is meaningful (all history), so `Number(...) || DEFAULT` would be
+  // wrong here — it would silently turn the widest view into the default one.
+  days.value = query.days === undefined ? DEFAULT_DAYS : Number(query.days) || 0
+}
+
+function isDefaultHidden(values: string[]): boolean {
+  return (
+    values.length === DEFAULT_HIDDEN_PREDICATES.length &&
+    DEFAULT_HIDDEN_PREDICATES.every((predicate) => values.includes(predicate))
+  )
 }
 
 function writeQuery({ push = false } = {}) {
@@ -71,6 +101,12 @@ function writeQuery({ push = false } = {}) {
   if (namespaces.value.length) query.namespace = namespaces.value.join(',')
   if (nodeLimit.value !== DEFAULT_NODE_LIMIT) query.limit = String(nodeLimit.value)
   if (!connectedOnly.value) query.min_degree = '0'
+  // Written even when empty — `exclude_predicate=` is how "hide nothing" is
+  // expressed, and dropping it would hand the decision back to the default.
+  if (!isDefaultHidden(hiddenPredicates.value)) {
+    query.exclude_predicate = hiddenPredicates.value.join(',')
+  }
+  if (days.value !== DEFAULT_DAYS) query.days = String(days.value)
   if (center.value) {
     query.center = center.value
     if (depth.value !== 1) query.depth = String(depth.value)
@@ -85,12 +121,18 @@ function writeQuery({ push = false } = {}) {
 
 async function loadFilterOptions() {
   try {
-    const data = await getGraph({ limit: GRAPH_MAX_LIMIT, min_degree: 0 })
+    // `exclude_predicate: ''` on purpose: this call exists to discover what is
+    // in the data, and the hidden-by-default predicate has to appear in the
+    // list of things you can un-hide.
+    const data = await getGraph({ limit: GRAPH_MAX_LIMIT, min_degree: 0, exclude_predicate: '' })
     const knownEntityTypes = new Set<string>(ENTITY_TYPE_OPTIONS.map((option) => option.value))
     namespaceOptions.value = data.categories
       .map((category) => category.name)
       .filter((name) => !knownEntityTypes.has(name))
       .map((name) => ({ value: name, label: name }))
+    predicateOptions.value = [...new Set(data.links.map((link) => link.predicate))]
+      .sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'))
+      .map((predicate) => ({ value: predicate, label: predicate }))
   } catch {
     // The namespace filter just stays empty; the main fetch below surfaces
     // its own error state if the API is actually unreachable.
@@ -129,6 +171,8 @@ async function loadGraph() {
       min_degree: connectedOnly.value ? 1 : 0,
       center: center.value ?? undefined,
       depth: center.value ? depth.value : undefined,
+      exclude_predicate: hiddenPredicates.value.join(','),
+      days: days.value,
     })
   } catch (e) {
     errorMessage.value = e instanceof Error ? e.message : '加载失败，请稍后重试。'
@@ -138,7 +182,7 @@ async function loadGraph() {
 }
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
-watch([entityTypes, namespaces, nodeLimit, connectedOnly, depth], () => {
+watch([entityTypes, namespaces, nodeLimit, connectedOnly, depth, hiddenPredicates, days], () => {
   writeQuery()
   if (debounceTimer) clearTimeout(debounceTimer)
   debounceTimer = setTimeout(loadGraph, 300)
@@ -236,6 +280,23 @@ const isEmpty = computed(
           mode="multiple"
           :options="namespaceOptions"
           placeholder="全部命名空间"
+          allow-clear
+          class="graph-view__select"
+        />
+      </div>
+
+      <div class="graph-view__filter">
+        <label class="graph-view__label">时间范围</label>
+        <a-select v-model:value="days" :options="DAYS_OPTIONS" class="graph-view__depth" />
+      </div>
+
+      <div class="graph-view__filter">
+        <label class="graph-view__label">隐藏关系类型</label>
+        <a-select
+          v-model:value="hiddenPredicates"
+          mode="multiple"
+          :options="predicateOptions"
+          placeholder="不隐藏"
           allow-clear
           class="graph-view__select"
         />

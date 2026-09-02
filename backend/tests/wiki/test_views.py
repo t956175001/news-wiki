@@ -10,6 +10,8 @@ and a design like that fails silently: it keeps working, just slower, until an
 entity with fifty relations makes it a hundred queries.
 """
 
+from datetime import timedelta
+
 import pytest
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -474,6 +476,204 @@ def test_min_degree_can_be_raised_to_show_only_hubs(client, entry):
     assert [node["name"] for node in body["nodes"]] == ["OpenAI"]
     # Its edges all point at nodes that were cut, so none can be drawn.
     assert body["links"] == []
+
+
+# --- predicate filtering ------------------------------------------------
+
+
+def _vague_edge(entry):
+    """An edge labelled `涉及` — the predicate that says almost nothing."""
+    other = Entity.objects.create(name="某场会议", normalized_name="某场会议", entity_type="event")
+    return Linkage.objects.create(subject_entity=entry["openai"], predicate="涉及", object_entity=other)
+
+
+def test_the_vaguest_predicate_is_hidden_by_default(client, entry):
+    """ADR-019. `涉及` was 17% of the edges on the live graph and carries no
+    relation of its own — two nodes being "involved" is the absence of a fact."""
+    _vague_edge(entry)
+
+    body = client.get("/api/v1/wiki/graph/").json()
+
+    assert "涉及" not in {link["predicate"] for link in body["links"]}
+    assert "某场会议" not in {node["name"] for node in body["nodes"]}
+
+
+def test_an_empty_exclusion_brings_every_predicate_back(client, entry):
+    """Present-but-empty differs from absent: it means "exclude nothing"."""
+    _vague_edge(entry)
+
+    body = client.get("/api/v1/wiki/graph/?exclude_predicate=").json()
+
+    assert "涉及" in {link["predicate"] for link in body["links"]}
+
+
+def test_predicates_can_be_excluded_by_name(client, entry):
+    body = client.get("/api/v1/wiki/graph/?exclude_predicate=发布,采用").json()
+
+    assert {link["predicate"] for link in body["links"]} == {"属于"}
+
+
+def test_degree_counts_only_the_edges_that_survive_the_filters(client, entry):
+    """`value` drives node size and the Top-N cut, so it has to describe the
+    graph being drawn rather than the one sitting in the database."""
+    before = {node["name"]: node["value"] for node in client.get("/api/v1/wiki/graph/").json()["nodes"]}
+    after = {
+        node["name"]: node["value"]
+        for node in client.get("/api/v1/wiki/graph/?exclude_predicate=发布").json()["nodes"]
+    }
+
+    assert before["GPT-5"] == 2  # 发布 inbound, 属于 outbound
+    assert after["GPT-5"] == 1
+
+
+def test_a_node_left_with_no_visible_edge_drops_off_the_canvas(client, entry):
+    """The concept hangs off a single 采用 edge; hide it and the node is a dot."""
+    names = {
+        node["name"] for node in client.get("/api/v1/wiki/graph/?exclude_predicate=采用").json()["nodes"]
+    }
+
+    assert "混合专家模型" not in names
+
+
+# --- time window --------------------------------------------------------
+
+
+def _dated_edge(entry, *, days_ago: int):
+    """A relation whose only evidence comes from an article that old."""
+    article = RawArticle.objects.create(
+        source=entry["article"].source,
+        title=f"{days_ago} 天前的报道",
+        url=f"https://example.com/old-{days_ago}",
+        content="旧闻。",
+        content_hash=f"aged-hash-{days_ago}",
+        publish_time=timezone.now() - timedelta(days=days_ago),
+    )
+    old = Entity.objects.create(
+        name=f"旧实体{days_ago}", normalized_name=f"旧实体{days_ago}", entity_type="org"
+    )
+    linkage = Linkage.objects.create(subject_entity=entry["openai"], predicate="合作", object_entity=old)
+    Evidence.objects.create(
+        raw_article=article,
+        linkage=linkage,
+        snippet="旧闻。",
+        extraction_run=entry["run"],
+        prompt_key="wiki.extract_linkages",
+        prompt_version=1,
+    )
+    return linkage, article
+
+
+def test_relations_from_older_news_fall_out_of_the_window(client, entry):
+    """ADR-019. The graph is cumulative; without a window it only ever grows,
+    and what you see converges on the same all-time hubs."""
+    _dated_edge(entry, days_ago=90)
+
+    names = {node["name"] for node in client.get("/api/v1/wiki/graph/?days=30").json()["nodes"]}
+
+    assert "旧实体90" not in names
+    assert "GPT-5" in names  # the fixture's own article is dated today
+
+
+def test_days_zero_means_the_whole_history(client, entry):
+    _dated_edge(entry, days_ago=90)
+
+    names = {node["name"] for node in client.get("/api/v1/wiki/graph/?days=0").json()["nodes"]}
+
+    assert "旧实体90" in names
+
+
+def test_the_window_reads_the_article_date_not_the_extraction_date(client, entry):
+    """Extraction happens whenever the backlog gets to an article, so
+    `Linkage.created_at` would report a two-month-old story as today's news."""
+    linkage, _article = _dated_edge(entry, days_ago=90)
+
+    assert (timezone.now() - linkage.created_at).days == 0  # created just now
+    names = {node["name"] for node in client.get("/api/v1/wiki/graph/?days=30").json()["nodes"]}
+    assert "旧实体90" not in names
+
+
+def test_one_recent_source_keeps_a_relation_in_the_window(client, entry):
+    """A relation is current if *any* article still supports it."""
+    linkage, _old = _dated_edge(entry, days_ago=90)
+    fresh = RawArticle.objects.create(
+        source=entry["article"].source,
+        title="今天又报了一次",
+        url="https://example.com/fresh",
+        content="新闻。",
+        content_hash="fresh-hash-1",
+        publish_time=timezone.now(),
+    )
+    Evidence.objects.create(
+        raw_article=fresh,
+        linkage=linkage,
+        snippet="新闻。",
+        extraction_run=entry["run"],
+        prompt_key="wiki.extract_linkages",
+        prompt_version=1,
+    )
+
+    names = {node["name"] for node in client.get("/api/v1/wiki/graph/?days=30").json()["nodes"]}
+
+    assert "旧实体90" in names
+
+
+def test_a_relation_whose_age_is_unknown_survives_the_window(client, entry):
+    """The window retires old news; it does not hide what it cannot date.
+
+    Two cases land here: a relation with no evidence at all, and evidence on an
+    article whose feed gave no parseable date. Dropping either would mean the
+    default view silently omits rows for a reason the reader cannot see.
+    """
+    undated_article = RawArticle.objects.create(
+        source=entry["article"].source,
+        title="没有日期的报道",
+        url="https://example.com/undated",
+        content="无日期。",
+        content_hash="undated-hash-1",
+        publish_time=None,
+    )
+    partner = Entity.objects.create(name="无日期实体", normalized_name="无日期实体", entity_type="org")
+    linkage = Linkage.objects.create(subject_entity=entry["openai"], predicate="投资", object_entity=partner)
+    Evidence.objects.create(
+        raw_article=undated_article,
+        linkage=linkage,
+        snippet="无日期。",
+        extraction_run=entry["run"],
+        prompt_key="wiki.extract_linkages",
+        prompt_version=1,
+    )
+
+    names = {node["name"] for node in client.get("/api/v1/wiki/graph/?days=30").json()["nodes"]}
+
+    assert "无日期实体" in names
+
+
+def test_the_window_does_not_double_count_degree(client, entry):
+    """The evidence join can multiply rows; an edge backed by three articles is
+    still one edge, and one relation for the node it hangs off."""
+    linkage, _old = _dated_edge(entry, days_ago=1)
+    for index in range(2):
+        extra = RawArticle.objects.create(
+            source=entry["article"].source,
+            title=f"追加报道 {index}",
+            url=f"https://example.com/extra-{index}",
+            content="新闻。",
+            content_hash=f"extra-hash-{index}",
+            publish_time=timezone.now(),
+        )
+        Evidence.objects.create(
+            raw_article=extra,
+            linkage=linkage,
+            snippet="新闻。",
+            extraction_run=entry["run"],
+            prompt_key="wiki.extract_linkages",
+            prompt_version=1,
+        )
+
+    body = client.get("/api/v1/wiki/graph/?days=30").json()
+
+    assert len([link for link in body["links"] if link["predicate"] == "合作"]) == 1
+    assert next(node for node in body["nodes"] if node["name"] == "旧实体1")["value"] == 1
 
 
 # --- ego graph ----------------------------------------------------------

@@ -192,6 +192,47 @@ describe('GraphView node clicks', () => {
     expect(wrapper.text()).toContain('以 混合专家模型 为中心的关系网络')
   })
 
+  it('asks for the default time window, matching the API', async () => {
+    await mountAt('/graph')
+
+    expect(lastGraphCall()).toMatchObject({ days: 30 })
+  })
+
+  it('keeps days=0 meaning all history rather than falling back to the default', async () => {
+    // `Number(query.days) || DEFAULT` would turn the widest view into the
+    // narrower default — the one value where the falsy shortcut is a bug.
+    await mountAt('/graph?days=0')
+
+    expect(lastGraphCall()).toMatchObject({ days: 0 })
+  })
+
+  it('hides the vaguest predicate by default, matching the API', async () => {
+    await mountAt('/graph')
+
+    expect(lastGraphCall()).toMatchObject({ exclude_predicate: '涉及' })
+  })
+
+  it('sends an empty exclusion rather than omitting it, so nothing stays hidden', async () => {
+    // Omitting the parameter would hand the decision back to the API default,
+    // which is the opposite of what clearing the filter asks for.
+    await mountAt('/graph?exclude_predicate=')
+
+    expect(lastGraphCall()).toMatchObject({ exclude_predicate: '' })
+  })
+
+  it('reads the hidden predicates back off the URL', async () => {
+    await mountAt('/graph?exclude_predicate=涉及,支持')
+
+    expect(lastGraphCall()).toMatchObject({ exclude_predicate: '涉及,支持' })
+  })
+
+  it('discovers the predicate options with nothing hidden', async () => {
+    // The discovery call has to see 涉及 too, or it could never be un-hidden.
+    await mountAt('/graph')
+
+    expect(mockedGetGraph.mock.calls[0][0]).toMatchObject({ exclude_predicate: '' })
+  })
+
   it('tells the canvas what a click will do, which differs between the two views', async () => {
     const { wrapper } = await mountAt('/graph')
     expect(wrapper.findComponent(GraphChart).props('clickHint')).toBe('点击聚焦到该节点')

@@ -35,6 +35,17 @@ export interface GraphParams {
   center?: string
   /** Hops from `center`. Only meaningful alongside it. */
   depth?: number
+  /**
+   * Predicates to hide, comma-separated. Backend default hides `涉及`; an empty
+   * string means hide nothing, which is why this is sent even when it is empty
+   * — omitting it would silently restore the backend default.
+   */
+  exclude_predicate?: string
+  /**
+   * Only relations backed by an article published within this many days; 0 is
+   * the whole history. Measured on the article date, not the extraction date.
+   */
+  days?: number
 }
 
 export async function listEntities(
