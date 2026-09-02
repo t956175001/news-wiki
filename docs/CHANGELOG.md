@@ -25,7 +25,6 @@
 - 补 `meta description` / Open Graph / `canonical` / `robots.txt` / `sitemap.xml`——
   被正常收录是企业 URL 过滤厂商给出分类的主要依据之一。
 - 加 `<noscript>` 兜底：禁用 JS 的受限浏览器至少能看到项目简介和 GitHub 链接。
-- 新增 `docs/ACCESS.md`：外企内网拦截的风险分析、各 URL 过滤厂商的分类申请入口、自查清单。
 
 ### 安全
 

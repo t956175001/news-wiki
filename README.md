@@ -236,7 +236,8 @@ LLM 调用在测试中**全部 mock**，重点覆盖失败路径：非法 JSON�
 | [docs/PROMPTS.md](docs/PROMPTS.md) | Prompt 全文与校验规则 |
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | 部署 Runbook |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | 14 天开发计划，每天的任务与完成判据 |
-| [docs/RESUME.md](docs/RESUME.md) | 简历话术与面试问答准备（数字来源可追溯） |
+| [docs/BACKLOG.md](docs/BACKLOG.md) | 已知短板与主动排除的功能 |
+| [docs/CHANGELOG.md](docs/CHANGELOG.md) | 每次变更的「做了什么 + 为什么」 |
 
 ## License
 

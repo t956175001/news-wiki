@@ -22,7 +22,7 @@
 - [ ] D10 关系图谱 + 今日简报页
 - [ ] D11 流水线面板 + Prompt 只读展示
 - [ ] D12 上线部署
-- [ ] D13 README + 简历话术
+- [ ] D13 README + 仓库门面
 - [ ] D14 打磨 + 演示录制
 
 ---
@@ -818,16 +818,16 @@ echo | openssl s_client -connect $DOMAIN:443 2>/dev/null | openssl x509 -noout -
 
 ---
 
-## D13 — README + 简历话术
+## D13 — README + 仓库门面
 
-**前置阅读**：`docs/DECISIONS.md`、`docs/RESUME.md`
+**前置阅读**：`docs/DECISIONS.md`
 
 ### Session Prompt
 
 ```
-读 docs/DECISIONS.md 和 docs/RESUME.md。
+读 docs/DECISIONS.md。
 
-今天做 D13：把仓库门面做出来。README 是面试官看的第一眼，
+今天做 D13：把仓库门面做出来。README 是读者看的第一眼，
 质量直接决定他会不会点进代码。
 
 1. README.md 结构（中文为主，顶部加英文摘要段）
@@ -850,11 +850,7 @@ echo | openssl s_client -connect $DOMAIN:443 2>/dev/null | openssl x509 -noout -
      用 ScreenToGif 或 LICEcap，控制在 15 秒内、5MB 以内
    - 关键页面截图放 docs/images/
 
-3. 补完 docs/RESUME.md：
-   按实际做出来的东西修订简历条目和面试问答稿，把真实数字填进去
-   （实体数、关系数、测试数、抽取耗时、单次成本等）
-
-4. GitHub 仓库设置
+3. GitHub 仓库设置
    - About 填一句话描述 + 在线地址
    - Topics: llm, knowledge-graph, django, vue3, information-extraction, rss
    - 确认 .env 不在仓库里
