@@ -26,6 +26,10 @@ jobs:
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
           script: |
+            # Without this the script runs every line regardless of the last
+            # one's exit code, and the job still reports success. A failed
+            # `migrate` shipped exactly that way once: green tick, broken site.
+            set -e
             cd ~/news-wiki
             git pull --ff-only
             cd deploy

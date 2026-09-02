@@ -9,11 +9,17 @@ sweep has to resolve both:
   product become one row.
 
 Order matters. The old constraint has to go *first*: re-keying rows one at a
-time walks through states that `uniq_entity_norm_type` would reject, and the new
-constraint cannot be added until the duplicates are already gone.
+time walks through states that `uniq_entity_norm_type` would reject.
+
+Adding the new constraint is a separate migration, and that split is not
+cosmetic. PostgreSQL refuses `ALTER TABLE` on a table that has pending trigger
+events, which is exactly what the deletes and foreign-key rewrites below leave
+behind inside the same transaction. Doing both here passed on SQLite and failed
+in production with `cannot ALTER TABLE "wiki_entity" because it has pending
+trigger events`.
 """
 
-from django.db import migrations, models
+from django.db import migrations
 
 from apps.wiki.services.merge import merge_duplicate_entities
 from apps.wiki.services.normalize import normalize_name
@@ -46,8 +52,4 @@ class Migration(migrations.Migration):
     operations = [
         migrations.RemoveConstraint(model_name="entity", name="uniq_entity_norm_type"),
         migrations.RunPython(fold_duplicates, unfold),
-        migrations.AddConstraint(
-            model_name="entity",
-            constraint=models.UniqueConstraint(fields=["normalized_name"], name="uniq_entity_norm"),
-        ),
     ]
