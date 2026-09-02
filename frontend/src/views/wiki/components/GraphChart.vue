@@ -16,9 +16,19 @@ echarts.use([EChartsGraphChart, TooltipComponent, LegendComponent, CanvasRendere
 const ALWAYS_LABEL_DEGREE = 3
 // Above this many nodes even the hubs go quiet, because "hub" stops being rare.
 const LABEL_ALL_BELOW = 40
+// How far the pointer may travel between press and release and still count as a
+// click. Nodes are `draggable`, and the browser fires `click` after a drag as
+// long as it ends on the same element — so without this, dragging one node to
+// untangle the layout also fires whatever a click on it does. Observed in a
+// real browser: three drags, three unintended activations.
+const CLICK_SLOP_PX = 5
 
-const props = defineProps<{ data: GraphData }>()
-const emit = defineEmits<{ nodeClick: [id: string] }>()
+const props = withDefaults(defineProps<{ data: GraphData; clickHint?: string }>(), {
+  // What a click does is the caller's business — this component still knows
+  // nothing about routes — but the hint has to match it, or it lies.
+  clickHint: '点击聚焦到该节点',
+})
+const emit = defineEmits<{ nodeClick: [id: string, name: string] }>()
 
 const el = ref<HTMLDivElement | null>(null)
 let chart: echarts.ECharts | null = null
@@ -132,10 +142,28 @@ onMounted(() => {
   if (!el.value) return
   chart = echarts.init(el.value)
   render()
+  // Compared against the release position rather than tracked as a "moved"
+  // flag, so a node drifting under a stationary cursor (the force layout is
+  // still settling) stays clickable.
+  let pressedAt: { x: number; y: number } | null = null
+  chart.getZr().on('mousedown', (event) => {
+    pressedAt = { x: event.offsetX, y: event.offsetY }
+  })
+
   chart.on('click', (params) => {
-    if (params.dataType === 'node') {
-      emit('nodeClick', String((params.data as { id: string }).id))
+    if (params.dataType !== 'node') return
+    const released = params.event
+    if (
+      pressedAt &&
+      released &&
+      Math.hypot(released.offsetX - pressedAt.x, released.offsetY - pressedAt.y) > CLICK_SLOP_PX
+    ) {
+      return
     }
+    // The name goes along with the id: the caller labels the ego view from
+    // it straight away, instead of re-fetching a name already on the canvas.
+    const node = params.data as { id: string; name?: string }
+    emit('nodeClick', String(node.id), String(node.name ?? ''))
   })
   window.addEventListener('resize', handleResize)
 })
@@ -153,7 +181,7 @@ onBeforeUnmount(() => {
   <div class="graph-chart">
     <div ref="el" class="graph-chart__canvas"></div>
     <p class="graph-chart__hint mono">
-      {{ nodeCount }} 个节点 · 滚轮缩放，拖拽平移，悬停高亮邻居，点击进入词条
+      {{ nodeCount }} 个节点 · 滚轮缩放，拖拽平移，悬停高亮邻居，{{ props.clickHint }}
     </p>
   </div>
 </template>

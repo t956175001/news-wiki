@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
-import { getEntity, getGraph } from '@/api/wiki'
+import { getConcept, getEntity, getGraph } from '@/api/wiki'
 import GraphChart from './components/GraphChart.vue'
 import LoadingPanel from '@/components/LoadingPanel.vue'
 import ErrorState from '@/components/ErrorState.vue'
@@ -62,7 +62,7 @@ function readQuery() {
   depth.value = Number(query.depth) || 1
 }
 
-function writeQuery() {
+function writeQuery({ push = false } = {}) {
   const query: Record<string, string> = {}
   if (entityTypes.value.length) query.entity_type = entityTypes.value.join(',')
   if (namespaces.value.length) query.namespace = namespaces.value.join(',')
@@ -72,9 +72,12 @@ function writeQuery() {
     query.center = center.value
     if (depth.value !== 1) query.depth = String(depth.value)
   }
-  // `replace`, not `push`: dragging a slider should not bury the previous page
-  // under twenty history entries.
-  router.replace({ query })
+  // Filters `replace`: dragging a slider should not bury the previous page
+  // under twenty history entries. Focusing a node is the exception — it is a
+  // navigation step, and Back has to land on the graph the user came from
+  // rather than skip past it to whatever preceded the page.
+  if (push) router.push({ query })
+  else router.replace({ query })
 }
 
 async function loadFilterOptions() {
@@ -91,21 +94,22 @@ async function loadFilterOptions() {
   }
 }
 
-/** The centre's display name, for the "以 X 为中心" banner. */
+/** The centre's display name, for the "以 X 为中心" banner.
+ *
+ * Only needed when the centre arrives from outside (a deep link, or Back into
+ * an ego view); a click already carries the name off the canvas. Falling back
+ * to '' leaves the banner showing the raw `e12`/`c3`, which is ugly but at
+ * least still true.
+ */
 async function loadCenterName() {
   const id = center.value
   if (!id) {
     centerName.value = ''
     return
   }
-  if (!id.startsWith('e')) {
-    // Concepts have no detail endpoint of their own to name them from; the
-    // node label on the canvas already says what it is.
-    centerName.value = ''
-    return
-  }
+  const pk = Number(id.slice(1))
   try {
-    centerName.value = (await getEntity(Number(id.slice(1)))).name
+    centerName.value = id.startsWith('e') ? (await getEntity(pk)).name : (await getConcept(pk)).name
   } catch {
     centerName.value = ''
   }
@@ -138,10 +142,14 @@ watch([entityTypes, namespaces, nodeLimit, connectedOnly, depth], () => {
 })
 
 // Reacts to the centre arriving from elsewhere — the entry page's
-// "在图谱中查看" button pushes /graph?center=e123 onto this same route.
+// "在图谱中查看" button pushes /graph?center=e123 onto this same route, and
+// Back/Forward walk the focus history the same way. A centre this component
+// wrote itself is skipped: it has already loaded, and reacting again would
+// mean two requests and a needless name lookup per click.
 watch(
   () => route.query.center,
-  () => {
+  (value) => {
+    if ((typeof value === 'string' && value ? value : null) === center.value) return
     readQuery()
     loadCenterName()
     loadGraph()
@@ -162,18 +170,31 @@ function exitEgo() {
   loadGraph()
 }
 
-// Concepts have no detail page yet (no /concept/:id route) — clicking one
-// re-centres the graph on it instead, which is the useful thing available.
-function handleNodeClick(id: string) {
-  if (id.startsWith('e')) {
+/** Pull the graph in around one node, keeping the user on the page. */
+function focusOn(id: string, name: string) {
+  center.value = id
+  centerName.value = name
+  writeQuery({ push: true })
+  loadGraph()
+}
+
+/** Two clicks to leave the page: the first focuses the graph on the node, the
+ * second — now inside that ego view — opens its entry.
+ *
+ * The gesture therefore means different things in the two views, which is a
+ * real cost; it buys a graph you can explore without being ejected from it by
+ * a stray click on a 14px node, and a first click that behaves the same
+ * whichever kind of node it lands on.
+ */
+function handleNodeClick(id: string, name: string) {
+  // Concepts have no detail page (no /concept/:id route), so re-centring stays
+  // the only useful thing a click on one can do — in the ego view as well.
+  if (center.value && id.startsWith('e')) {
     router.push(`/wiki/${id.slice(1)}`)
     return
   }
-  center.value = id
-  depth.value = 1
-  writeQuery()
-  loadGraph()
-  message.info('已切换到该概念的关系网络。')
+  if (center.value) message.info('该概念暂无独立词条页，已切换到它的关系网络。')
+  focusOn(id, name)
 }
 
 const isEmpty = computed(
@@ -258,7 +279,12 @@ const isEmpty = computed(
         <div v-if="graph.truncated" class="graph-view__truncated-banner">
           仅显示关系最密集的 {{ graph.nodes.length }} 个节点
         </div>
-        <GraphChart ref="chart" :data="graph" @node-click="handleNodeClick" />
+        <GraphChart
+          ref="chart"
+          :data="graph"
+          :click-hint="center ? '点击进入词条' : '点击聚焦到该节点'"
+          @node-click="handleNodeClick"
+        />
       </template>
     </div>
   </section>

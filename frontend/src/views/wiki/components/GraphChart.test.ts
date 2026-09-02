@@ -2,11 +2,25 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, type VueWrapper } from '@vue/test-utils'
 import type { GraphData } from '@/types/wiki'
 
+const mockZr = { on: vi.fn() }
 const mockChart = {
   setOption: vi.fn(),
   resize: vi.fn(),
   dispose: vi.fn(),
   on: vi.fn(),
+  getZr: vi.fn(() => mockZr),
+}
+
+/** Drive the press/release pair the component listens for. */
+function pressAndRelease(
+  from: [number, number],
+  to: [number, number],
+  node = { id: 'e12', name: 'OpenAI' },
+) {
+  const onMouseDown = mockZr.on.mock.calls.find(([event]) => event === 'mousedown')?.[1]
+  const onClick = mockChart.on.mock.calls.find(([event]) => event === 'click')?.[1]
+  onMouseDown?.({ offsetX: from[0], offsetY: from[1] })
+  onClick?.({ dataType: 'node', data: node, event: { offsetX: to[0], offsetY: to[1] } })
 }
 
 vi.mock('echarts/core', () => ({
@@ -132,11 +146,34 @@ describe('GraphChart', () => {
     expect(mockChart.dispose).toHaveBeenCalledTimes(1)
   })
 
-  it('emits nodeClick with the raw prefixed id when a node is clicked', () => {
+  it('emits nodeClick with the raw prefixed id and the node name', () => {
+    // The name rides along so the parent can label the ego view immediately;
+    // it is on the canvas already, and re-fetching it would flash a raw id.
     wrapper = mount(GraphChart, { props: { data: sampleData } })
-    const clickHandler = mockChart.on.mock.calls.find(([event]) => event === 'click')?.[1]
-    clickHandler?.({ dataType: 'node', data: { id: 'e12' } })
-    expect(wrapper.emitted('nodeClick')).toEqual([['e12']])
+    pressAndRelease([120, 80], [122, 81])
+    expect(wrapper.emitted('nodeClick')).toEqual([['e12', 'OpenAI']])
+  })
+
+  it('ignores the click a drag leaves behind, since nodes are draggable', () => {
+    // The browser fires `click` after a drag when press and release land on the
+    // same element, so dragging a node to untangle the layout would otherwise
+    // activate it too.
+    wrapper = mount(GraphChart, { props: { data: sampleData } })
+    pressAndRelease([120, 80], [215, 167])
+    expect(wrapper.emitted('nodeClick')).toBeUndefined()
+  })
+
+  it('still counts a click when the node drifts under a stationary cursor', () => {
+    // The force layout keeps moving after the first paint; what matters is
+    // whether the pointer moved, not whether the node did.
+    wrapper = mount(GraphChart, { props: { data: sampleData } })
+    pressAndRelease([120, 80], [120, 80])
+    expect(wrapper.emitted('nodeClick')).toEqual([['e12', 'OpenAI']])
+  })
+
+  it('shows the caller-supplied hint, since what a click does depends on the view', () => {
+    wrapper = mount(GraphChart, { props: { data: sampleData, clickHint: '点击进入词条' } })
+    expect(wrapper.text()).toContain('点击进入词条')
   })
 
   it('re-renders with new data without re-initializing the chart', async () => {
