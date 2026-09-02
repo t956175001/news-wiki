@@ -13,7 +13,7 @@ const NAV_ITEMS: NavItem[] = [
   { key: 'brief', label: '今日简报', to: '/', index: '01' },
   { key: 'wiki', label: '词条库', to: '/wiki', index: '02' },
   { key: 'graph', label: '关系图谱', to: '/graph', index: '03' },
-  { key: 'ops', label: '流水线', to: '/ops', index: '04' },
+  { key: 'ops', label: '工作流', to: '/ops', index: '04' },
 ]
 
 const route = useRoute()

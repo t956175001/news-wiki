@@ -42,7 +42,7 @@ const router = createRouter({
       path: '/ops',
       name: 'ops',
       component: () => import('@/views/ops/OpsView.vue'),
-      meta: { navKey: 'ops', title: '流水线面板' },
+      meta: { navKey: 'ops', title: '工作流面板' },
     },
   ],
 

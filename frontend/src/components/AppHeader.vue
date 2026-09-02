@@ -7,7 +7,7 @@ const TITLES: Record<string, string> = {
   brief: '今日简报',
   wiki: '词条库',
   graph: '关系图谱',
-  ops: '流水线面板',
+  ops: '工作流面板',
 }
 
 const route = useRoute()

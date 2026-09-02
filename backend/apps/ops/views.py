@@ -48,7 +48,7 @@ MAX_STATS_DAYS = 365
 @extend_schema_view(
     list=extend_schema(
         summary="抽取记录列表",
-        description="历次流水线执行，最近的在前。不含分步指标，展开某一条时再取详情。",
+        description="历次工作流执行，最近的在前。不含分步指标，展开某一条时再取详情。",
     ),
     retrieve=extend_schema(
         summary="抽取记录详情",
@@ -121,7 +121,7 @@ def _token_matches(request: Request) -> bool:
 
 
 @extend_schema(
-    summary="触发每日流水线",
+    summary="触发每日工作流",
     description=(
         "cron 专用：采集 → 抽取 → 简报，写进同一个 ExtractionRun。"
         "需要 `X-Cron-Token` header。免限流、免日预算熔断。"

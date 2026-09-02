@@ -69,7 +69,7 @@ const runIdShort = computed(() => props.evidence.run_id.slice(0, 8))
       <RouterLink
         class="evidence-card__run-link mono"
         :to="{ path: '/ops', query: { run_id: evidence.run_id } }"
-        title="跳转到流水线面板查看这次抽取"
+        title="跳转到工作流面板查看这次抽取"
       >
         run·{{ runIdShort }}
       </RouterLink>
