@@ -34,10 +34,15 @@ class Entity(models.Model):
     class Meta:
         ordering = ["-mention_count", "normalized_name"]
         constraints = [
-            models.UniqueConstraint(
-                fields=["normalized_name", "entity_type"],
-                name="uniq_entity_norm_type",
-            )
+            # The name alone is the identity; `entity_type` is an attribute of
+            # the entry, not part of its key. It used to be — the reasoning was
+            # that "Claude" the model and "Claude" the product are two things —
+            # but the live data said otherwise: 19 duplicate groups, every one
+            # of them a single real subject the model had typed inconsistently
+            # (GitHub org+product, Hugging Face org+product, DeepSeek org+model),
+            # and not one genuine homonym. A noisy label makes a bad key. See
+            # ADR-019.
+            models.UniqueConstraint(fields=["normalized_name"], name="uniq_entity_norm")
         ]
         indexes = [models.Index(fields=["entity_type"])]
 

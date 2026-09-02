@@ -8,7 +8,13 @@ same relation ("发布"/"推出"/"上线"), and a graph whose edges are labelled
 ways for one kind of fact is a graph nobody can read.
 """
 
+import re
 from collections.abc import Iterable
+
+# Characters that differ between surface forms of one name without changing it:
+# any whitespace, hyphen/underscore, the ASCII dot in `Node.js`, and the CJK
+# interpuncts used when transliterating western names.
+_NAME_SEPARATORS = re.compile(r"[\s\-_.·・‧∙]+")
 
 # The canonical predicates offered to the model in `wiki.extract_linkages`.
 # Anything the model invents outside this list survives normalisation unchanged —
@@ -166,10 +172,21 @@ PREDICATE_ALIASES: dict[str, str] = {
 def normalize_name(name: str) -> str:
     """The match key for an entity or concept name.
 
-    Contract: `Entity.normalized_name` in ARCHITECTURE 3.2. Case-folded and
-    whitespace-collapsed, so "Open  AI" and "open ai" are one wiki entry.
+    Contract: `Entity.normalized_name` in ARCHITECTURE 3.2. Case is folded and
+    every separator is dropped, so "Open AI" and "OpenAI" are one wiki entry.
+
+    Dropping separators rather than merely collapsing them is what the live data
+    asked for: `小米 18 Fold` / `小米18 Fold`, `约翰 · 特努斯` / `约翰·特努斯`,
+    `DeepSeek V4 Flash` / `DeepSeek-V4-Flash` and `U-Net` / `Unet` were all
+    sitting as separate rows, each splitting one subject's relations across two
+    nodes. What varies between those pairs is spacing and hyphenation; the
+    characters on either side never do. See ADR-019.
     """
-    return " ".join(name.lower().split())
+    stripped = _NAME_SEPARATORS.sub("", name.lower())
+    # A name made only of separators would otherwise key on "" and collide with
+    # every other such name. Rare, but a silent cross-entity merge is the worst
+    # failure this function has.
+    return stripped or " ".join(name.lower().split())
 
 
 def normalize_predicate(predicate: str) -> str:

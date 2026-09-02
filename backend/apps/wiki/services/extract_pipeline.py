@@ -254,15 +254,16 @@ def _seen_at(article: RawArticle | None, fallback):
     return fallback
 
 
-def _save_entities(items, articles_by_id, now) -> dict[tuple[str, str], Entity]:
-    """Upsert entities, returned keyed by their uniqueness pair.
+def _save_entities(items, articles_by_id, now) -> dict[str, Entity]:
+    """Upsert entities, returned keyed by their normalised name.
 
-    Keyed on `(normalized_name, entity_type)` — the same pair as
-    `uniq_entity_norm_type` — because "Claude" the model and "Claude" the product
-    are two rows, and attaching one's evidence to the other would be silent
-    corruption of the thing this whole project is selling.
+    Keyed on `normalized_name` alone — the same key as `uniq_entity_norm`. The
+    type used to be part of it, on the theory that "Claude" the model and
+    "Claude" the product are two subjects; the live data showed the opposite,
+    that the model types one subject inconsistently across articles and the
+    split was cutting real entities in half. ADR-019 has the counts.
     """
-    saved: dict[tuple[str, str], Entity] = {}
+    saved: dict[str, Entity] = {}
 
     for item in items:
         normalized = normalize_name(item["name"])
@@ -270,8 +271,8 @@ def _save_entities(items, articles_by_id, now) -> dict[tuple[str, str], Entity]:
 
         entity, created = Entity.objects.get_or_create(
             normalized_name=normalized,
-            entity_type=item["type"],
             defaults={
+                "entity_type": item["type"],
                 "name": item["name"],
                 "aliases": merge_aliases([], item["aliases"]),
                 "summary": item["summary"],
@@ -302,7 +303,7 @@ def _save_entities(items, articles_by_id, now) -> dict[tuple[str, str], Entity]:
         entity.last_seen_at = max(filter(None, [entity.last_seen_at, seen_at]), default=seen_at)
         entity.save()
 
-        saved[(normalized, item["type"])] = entity
+        saved[normalized] = entity
 
     return saved
 
@@ -439,9 +440,7 @@ def persist(
     saved_concepts = _save_concepts(concepts)
     saved_linkages, unresolved = _save_linkages(linkages, _by_name(saved_entities), _by_name(saved_concepts))
 
-    entity_targets = [
-        (saved_entities[(normalize_name(item["name"]), item["type"])], item) for item in entities
-    ]
+    entity_targets = [(saved_entities[normalize_name(item["name"])], item) for item in entities]
     concept_targets = [(saved_concepts[(item["namespace"], item["name"])], item) for item in concepts]
 
     evidence_count = (

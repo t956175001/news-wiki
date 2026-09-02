@@ -15,14 +15,50 @@ from apps.wiki.services.normalize import (
     ("given", "expected"),
     [
         ("OpenAI", "openai"),
-        ("Open  AI", "open ai"),
-        ("  GPT-5  ", "gpt-5"),
-        ("Open\tAI\nLabs", "open ai labs"),
+        ("Open  AI", "openai"),
+        ("  GPT-5  ", "gpt5"),
+        ("Open\tAI\nLabs", "openailabs"),
         ("混合专家模型", "混合专家模型"),
     ],
 )
-def test_normalize_name_folds_case_and_whitespace(given, expected):
+def test_normalize_name_folds_case_and_separators(given, expected):
     assert normalize_name(given) == expected
+
+
+@pytest.mark.parametrize(
+    ("left", "right"),
+    [
+        # Every one of these sat in the live database as two separate rows.
+        ("小米 18 Fold", "小米18 Fold"),
+        ("约翰 · 特努斯", "约翰·特努斯"),
+        ("蒂姆 · 库克", "蒂姆·库克"),
+        ("DeepSeek V4 Flash", "DeepSeek-V4-Flash"),
+        ("U-Net", "Unet"),
+        ("agents.md", "AGENTS.md"),
+        ("Open AI", "OpenAI"),
+    ],
+)
+def test_surface_variants_of_one_name_share_a_key(left, right):
+    assert normalize_name(left) == normalize_name(right)
+
+
+@pytest.mark.parametrize(
+    ("left", "right"),
+    [
+        ("GPT-5", "GPT-4"),
+        ("Llama 3.1", "Llama 3.2"),
+        ("小米 18", "小米 17"),
+    ],
+)
+def test_names_that_differ_in_substance_keep_different_keys(left, right):
+    """Separators are noise; the characters around them are not."""
+    assert normalize_name(left) != normalize_name(right)
+
+
+def test_a_name_made_only_of_separators_does_not_collapse_to_nothing():
+    """An empty key would collide with every other punctuation-only name."""
+    assert normalize_name("---") != ""
+    assert normalize_name("---") != normalize_name("...")
 
 
 @pytest.mark.parametrize(("given", "expected"), [("推出", "发布"), ("发行", "发布"), ("上线", "发布")])
