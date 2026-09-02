@@ -41,6 +41,13 @@ const sample: GraphData = {
   truncated: false,
 }
 
+// The filter watcher fires once on mount — readQuery assigns fresh arrays to
+// entityTypes/namespaces — and schedules a redundant reload 300ms later (see
+// BACKLOG). Anything that counts calls or spies on the router has to let that
+// land first, or the result depends on how fast the machine is: this file went
+// green locally and red on CI for exactly that reason.
+const MOUNT_DEBOUNCE_MS = 300
+
 async function mountAt(path: string) {
   const router = createRouter({
     history: createWebHistory(),
@@ -52,6 +59,8 @@ async function mountAt(path: string) {
   router.push(path)
   await router.isReady()
   const wrapper = mount(GraphView, { global: { plugins: [router, Antd] } })
+  await flushPromises()
+  await new Promise((resolve) => setTimeout(resolve, MOUNT_DEBOUNCE_MS + 50))
   await flushPromises()
   return { wrapper, router }
 }
