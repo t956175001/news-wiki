@@ -6,6 +6,8 @@ that were fetched anyway — so most of these break one phase on purpose and the
 assert the others still ran.
 """
 
+from datetime import timedelta
+
 import pytest
 from django.utils import timezone
 
@@ -14,7 +16,7 @@ from apps.common.exceptions import AppError, ContentFilteredError
 from apps.ingest.models import RawArticle
 from apps.ops.models import ExtractionRun
 from apps.ops.services import pipeline as pipeline_module
-from apps.ops.services.pipeline import MAX_ARTICLES_PER_RUN, run_daily
+from apps.ops.services.pipeline import MAX_ARTICLES_PER_RUN, PENDING_TTL_DAYS, run_daily
 from apps.wiki.models import Entity, Linkage
 
 pytestmark = pytest.mark.django_db
@@ -353,6 +355,63 @@ def test_nothing_pending_skips_the_extraction_without_calling_the_model(stub_ing
     assert "extract_entities" not in run.step_metrics
     assert mock_llm.call_count == 1
     assert run.status == "success"
+
+
+def test_pending_articles_older_than_the_ttl_are_retired(stub_ingest, mock_llm):
+    """ADR-019. Ingest brings in several times what one run can extract, so the
+    oldest pending rows are unreachable by construction — the queue is drained
+    newest-first. Left alone they accumulate forever and misreport the backlog.
+    """
+    stale = make_article(1)
+    RawArticle.objects.filter(pk=stale.pk).update(
+        publish_time=timezone.now() - timedelta(days=PENDING_TTL_DAYS + 1)
+    )
+    daily(mock_llm)
+
+    stale.refresh_from_db()
+    assert stale.extract_status == "skipped"
+    # Retired rather than extracted, so the model was never reached at all —
+    # the brief has no material either once the only article is retired.
+    assert mock_llm.call_count == 0
+
+
+def test_recent_pending_articles_are_left_alone(stub_ingest, mock_llm):
+    fresh = make_article(2)
+    RawArticle.objects.filter(pk=fresh.pk).update(
+        publish_time=timezone.now() - timedelta(days=PENDING_TTL_DAYS - 1)
+    )
+    script_full_day(mock_llm, fresh.pk)
+
+    daily(mock_llm)
+
+    fresh.refresh_from_db()
+    assert fresh.extract_status == "extracted"
+
+
+def test_retiring_the_backlog_never_touches_an_article_that_already_ran(stub_ingest, mock_llm):
+    """`skipped` means "we chose not to"; it must not overwrite a real outcome."""
+    for status in ("extracted", "failed"):
+        article = make_article(hash(status) % 1000, status=status)
+        RawArticle.objects.filter(pk=article.pk).update(
+            publish_time=timezone.now() - timedelta(days=PENDING_TTL_DAYS + 30)
+        )
+    mock_llm.push_json(BRIEF_PAYLOAD)
+
+    daily(mock_llm)
+
+    assert set(RawArticle.objects.values_list("extract_status", flat=True)) == {"extracted", "failed"}
+
+
+def test_an_undated_pending_article_is_not_retired(stub_ingest, mock_llm):
+    """Nothing is known about its age, so nothing can be concluded about it."""
+    undated = make_article(3)
+    RawArticle.objects.filter(pk=undated.pk).update(publish_time=None)
+    script_full_day(mock_llm, undated.pk)
+
+    daily(mock_llm)
+
+    undated.refresh_from_db()
+    assert undated.extract_status == "extracted"
 
 
 def test_a_day_with_no_articles_skips_the_brief_without_failing(stub_ingest, mock_llm):

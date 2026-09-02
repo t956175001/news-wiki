@@ -44,12 +44,40 @@ STEP_INGEST = "ingest"
 # very surprising invoice.
 MAX_ARTICLES_PER_RUN = 20
 
+# How long a pending article stays in the queue before it is retired unread.
+#
+# Ingest brings in several times what one run can extract (measured on the live
+# site: ~30-80 articles a day against a ceiling of 20), and the queue is drained
+# newest-first. So the oldest pending rows are not "waiting" — they are
+# unreachable by construction, and left alone they pile up forever and make the
+# backlog look like work in progress. Retiring them says the honest thing: this
+# wiki covers the top stories of each day, not every story. See ADR-019.
+PENDING_TTL_DAYS = 14
+
 # `ExtractionRun.error_message` is a TextField, but three failed steps should not
 # turn one row into a log file.
 MAX_ERROR_CHARS = 2000
 
 _OK = {"done", "success", "partial"}
 _BAD = {"failed", "partial"}
+
+
+def _retire_stale_pending(run: ExtractionRun) -> int:
+    """Close out pending articles too old to be worth extracting.
+
+    Only ever moves `pending` rows: `extracted` and `failed` are outcomes that
+    actually happened and must not be overwritten. Undated articles are left
+    alone too — their age is unknown, so nothing follows from it.
+    """
+    cutoff = timezone.now() - dt.timedelta(days=PENDING_TTL_DAYS)
+    retired = RawArticle.objects.filter(
+        extract_status="pending", publish_time__isnull=False, publish_time__lt=cutoff
+    ).update(extract_status="skipped")
+    if retired:
+        logger.info(
+            "run_id=%s retired %s pending articles older than %sd", run.run_id, retired, PENDING_TTL_DAYS
+        )
+    return retired
 
 
 def _pending_articles() -> list[RawArticle]:
@@ -113,6 +141,7 @@ def _extract_phase(
     trigger: str,
     sleep,
 ) -> str:
+    _retire_stale_pending(run)
     articles = _pending_articles()
     if not articles:
         logger.info("run_id=%s nothing pending to extract", run.run_id)
