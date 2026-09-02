@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
 import { createRouter, createWebHistory } from 'vue-router'
-import Antd from 'ant-design-vue'
+import Antd, { message } from 'ant-design-vue'
 import type { GraphData } from '@/types/wiki'
 
 const mockChart = {
@@ -98,21 +98,46 @@ describe('GraphView node clicks', () => {
     expect(mockedGetConcept).not.toHaveBeenCalled()
   })
 
-  it('opens the entry when a second click lands on an entity inside the ego graph', async () => {
+  it('keeps focusing rather than navigating when another node is clicked inside the ego graph', async () => {
+    // One rule in both views: a click moves the focus. That is what lets you
+    // walk the graph hop by hop instead of the ego view being a dead end.
     const { wrapper, router } = await mountAt('/graph?center=e12')
 
     await clickNode(wrapper, 'e45', 'GPT-5')
 
-    expect(router.currentRoute.value.path).toBe('/wiki/45')
+    expect(router.currentRoute.value.path).toBe('/graph')
+    expect(router.currentRoute.value.query.center).toBe('e45')
   })
 
-  it('re-centres instead of navigating for a concept, which has no entry page of its own', async () => {
+  it('opens the entry when the node that is already the centre is clicked', async () => {
     const { wrapper, router } = await mountAt('/graph?center=e12')
+
+    await clickNode(wrapper, 'e12', 'OpenAI')
+
+    expect(router.currentRoute.value.path).toBe('/wiki/12')
+  })
+
+  it('stays put and explains when the centre is a concept, which has no entry page', async () => {
+    const { wrapper, router } = await mountAt('/graph?center=c3')
+    const info = vi.spyOn(message, 'info')
 
     await clickNode(wrapper, 'c3', '混合专家模型')
 
     expect(router.currentRoute.value.path).toBe('/graph')
     expect(router.currentRoute.value.query.center).toBe('c3')
+    expect(info).toHaveBeenCalledTimes(1)
+  })
+
+  it('offers the entry from the banner too, since the centre moves when the layout re-runs', async () => {
+    const { wrapper } = await mountAt('/graph?center=e12')
+
+    expect(wrapper.find('.graph-view__entry-link').attributes('href')).toBe('/wiki/12')
+  })
+
+  it('has no banner entry link for a concept centre', async () => {
+    const { wrapper } = await mountAt('/graph?center=c3')
+
+    expect(wrapper.find('.graph-view__entry-link').exists()).toBe(false)
   })
 
   it('pushes history when focusing, so Back returns to the full graph', async () => {
@@ -163,6 +188,8 @@ describe('GraphView node clicks', () => {
     expect(wrapper.findComponent(GraphChart).props('clickHint')).toBe('点击聚焦到该节点')
 
     const ego = await mountAt('/graph?center=e12')
-    expect(ego.wrapper.findComponent(GraphChart).props('clickHint')).toBe('点击进入词条')
+    expect(ego.wrapper.findComponent(GraphChart).props('clickHint')).toBe(
+      '点击聚焦，点中心节点进入词条',
+    )
   })
 })

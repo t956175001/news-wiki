@@ -178,24 +178,32 @@ function focusOn(id: string, name: string) {
   loadGraph()
 }
 
-/** Two clicks to leave the page: the first focuses the graph on the node, the
- * second — now inside that ego view — opens its entry.
+/** One rule, both views: a click moves the focus, and clicking the node that
+ * already holds it opens its entry.
  *
- * The gesture therefore means different things in the two views, which is a
- * real cost; it buys a graph you can explore without being ejected from it by
- * a stray click on a 14px node, and a first click that behaves the same
- * whichever kind of node it lands on.
+ * Two clicks still get you off the page, but nothing about the gesture depends
+ * on which view you are in, and the focus can keep moving hop by hop instead
+ * of the ego view being a one-hop dead end. The centre lands somewhere new
+ * each time the layout re-runs, so the banner carries the same escape hatch.
  */
 function handleNodeClick(id: string, name: string) {
-  // Concepts have no detail page (no /concept/:id route), so re-centring stays
-  // the only useful thing a click on one can do — in the ego view as well.
-  if (center.value && id.startsWith('e')) {
-    router.push(`/wiki/${id.slice(1)}`)
+  if (id !== center.value) {
+    focusOn(id, name)
     return
   }
-  if (center.value) message.info('该概念暂无独立词条页，已切换到它的关系网络。')
-  focusOn(id, name)
+  // Concepts have no detail page (no /concept/:id route). Re-centring on the
+  // current centre would only refetch the same graph, so say why instead.
+  if (!id.startsWith('e')) {
+    message.info('该概念暂无独立词条页。')
+    return
+  }
+  router.push(`/wiki/${id.slice(1)}`)
 }
+
+/** Entry route for the current centre, or null for a concept (no page yet). */
+const centerEntryPath = computed(() =>
+  center.value?.startsWith('e') ? `/wiki/${center.value.slice(1)}` : null,
+)
 
 const isEmpty = computed(
   () =>
@@ -262,7 +270,14 @@ const isEmpty = computed(
       <span
         >以 <strong>{{ centerName || center }}</strong> 为中心的关系网络</span
       >
-      <a-button type="link" size="small" @click="exitEgo">查看全图</a-button>
+      <span class="graph-view__ego-actions">
+        <!-- The centre is clickable on the canvas too, but it moves every time
+             the layout re-runs; this stays in one place. -->
+        <RouterLink v-if="centerEntryPath" :to="centerEntryPath" class="graph-view__entry-link"
+          >查看词条 →</RouterLink
+        >
+        <a-button type="link" size="small" @click="exitEgo">查看全图</a-button>
+      </span>
     </div>
 
     <div class="graph-view__canvas">
@@ -282,7 +297,7 @@ const isEmpty = computed(
         <GraphChart
           ref="chart"
           :data="graph"
-          :click-hint="center ? '点击进入词条' : '点击聚焦到该节点'"
+          :click-hint="center ? '点击聚焦，点中心节点进入词条' : '点击聚焦到该节点'"
           @node-click="handleNodeClick"
         />
       </template>
@@ -351,6 +366,18 @@ const isEmpty = computed(
   border-radius: var(--radius-md);
   background: var(--color-accent-soft);
   border: 1px solid var(--color-accent);
+  font-size: 13px;
+}
+
+.graph-view__ego-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  white-space: nowrap;
+}
+
+.graph-view__entry-link {
+  color: var(--color-accent-strong);
   font-size: 13px;
 }
 
