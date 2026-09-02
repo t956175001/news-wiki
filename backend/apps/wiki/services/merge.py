@@ -168,9 +168,13 @@ def merge_duplicate_entities(*, entity_model, linkage_model, evidence_model, nor
         if primary.normalized_name != key:
             survivors.append((primary.pk, key))
 
-    # `\x00` cannot appear in a name, so the parking space is always free.
+    # The parking value has to be both impossible as a real key and storable.
+    # An uppercase letter satisfies the first: `normalize_name` lower-cases on
+    # every path, so no real key can contain one. It has to be that rather than
+    # a control character — `\x00` is fine in SQLite and rejected outright by
+    # PostgreSQL, which is what production runs.
     for pk, _key in survivors:
-        entity_model.objects.filter(pk=pk).update(normalized_name=f"\x00rekey-{pk}")
+        entity_model.objects.filter(pk=pk).update(normalized_name=f"REKEY-{pk}")
     for pk, key in survivors:
         entity_model.objects.filter(pk=pk).update(normalized_name=key)
     return removed

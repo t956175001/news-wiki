@@ -55,6 +55,13 @@ def test_names_that_differ_in_substance_keep_different_keys(left, right):
     assert normalize_name(left) != normalize_name(right)
 
 
+@pytest.mark.parametrize("given", ["OpenAI", "GPT-5", "  Mixed Case  ", "---", "混合专家模型"])
+def test_a_key_never_contains_an_uppercase_letter(given):
+    """`merge.py` parks rows under `REKEY-<pk>` while it rewrites keys, and
+    relies on that value being unreachable from this function."""
+    assert not any(character.isupper() for character in normalize_name(given))
+
+
 def test_a_name_made_only_of_separators_does_not_collapse_to_nothing():
     """An empty key would collide with every other punctuation-only name."""
     assert normalize_name("---") != ""
