@@ -25,7 +25,7 @@ from apps.wiki.models import Concept, Entity, Linkage
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_LIMIT = 150
+DEFAULT_LIMIT = 100
 MAX_LIMIT = 500
 
 # ARCHITECTURE 4.2: `min(60, 12 + value * 2)`. Small enough that a node with no

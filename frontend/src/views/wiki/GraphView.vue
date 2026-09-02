@@ -18,7 +18,10 @@ const GRAPH_MAX_LIMIT = 500
 const NODE_LIMIT_MIN = 20
 const NODE_LIMIT_MAX = 300
 const NODE_LIMIT_STEP = 10
-const DEFAULT_NODE_LIMIT = 150
+// Same value as the API's own default (ARCHITECTURE 4.2, ADR-018). It is
+// repeated here because the URL omits `limit` when it matches, which keeps a
+// bare /graph link clean — so the two do have to agree.
+const DEFAULT_NODE_LIMIT = 100
 const DEPTH_OPTIONS = [
   { value: 1, label: '直接关系' },
   { value: 2, label: '两跳以内' },
