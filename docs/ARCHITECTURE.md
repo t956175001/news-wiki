@@ -178,7 +178,7 @@ class Entity(models.Model):
                     ("tech","Technology"), ("event","Event"), ("other","Other")]
 
     name            = CharField(max_length=255)
-    normalized_name = CharField(max_length=255)   # " ".join(name.lower().split())
+    normalized_name = CharField(max_length=255)   # 见下方「实体归一化」，ADR-019 起去掉全部分隔符
     entity_type     = CharField(max_length=20, choices=ENTITY_TYPES)
     aliases         = JSONField(default=list, blank=True)     # list[str]
     summary         = TextField(blank=True)                   # AI 生成的词条摘要
@@ -191,8 +191,8 @@ class Entity(models.Model):
 
     class Meta:
         ordering = ["-mention_count", "normalized_name"]
-        constraints = [UniqueConstraint(fields=["normalized_name","entity_type"],
-                                        name="uniq_entity_norm_type")]
+        constraints = [UniqueConstraint(fields=["normalized_name"],
+                                        name="uniq_entity_norm")]   # 名字即身份；entity_type 是属性不是键，见 ADR-019
         indexes = [Index(fields=["entity_type"])]
 
 
@@ -433,8 +433,14 @@ class DailyBrief(models.Model):
 | `namespace` | 全部 | 只保留这些命名空间的概念节点，逗号分隔可传多个 |
 | `limit` | `100` | 节点数上限，硬上限 500。见 ADR-018 |
 | `min_degree` | `1` | 最少关系数。默认隐藏孤立节点；传 `0` 显示全部并改用按排名截断 |
+| `days` | `30` | 只保留最近这么多天的关系，按**文章发布时间**算；传 `0` 取全部历史。见 ADR-019 |
+| `exclude_predicate` | `涉及` | 隐藏这些谓词的边，逗号分隔。传空值（`exclude_predicate=`）则不隐藏。见 ADR-019 |
 | `center` | — | 邻域图的中心节点 id（如 `e12`）。中心节点必定保留，不存在时返回空图 |
 | `depth` | `1` | 邻域跳数，上限 3。仅在传了 `center` 时生效 |
+
+**节点度数（`value`）按过滤后可见的边计算**，不是库里的总数：`days` 或 `exclude_predicate`
+删掉一条边，它两端的节点就各少一度，只剩孤立点的节点会被 `min_degree` 一并滤掉。
+节点大小和 Top-N 排序都读这个值，若用库里的总度数，画出来的图会有又大又没有连线的节点。
 
 **选点规则**：超过 `limit` 时按**关系密度**选点——边按两端度数之和排序，
 依次收录端点直到预算用尽，使进入画布的每个节点都至少带一条边。
@@ -474,7 +480,7 @@ class LLMClient(Protocol):
 | `/wiki` | `wiki/EntityListView.vue` | 实体列表，可搜索/按类型筛选 |
 | `/wiki/:id` | `wiki/EntityDetailView.vue` | ★ 词条页 |
 | `/graph` | `wiki/GraphView.vue` | 关系图谱 |
-| `/ops` | `ops/OpsView.vue` | 流水线面板 |
+| `/ops` | `ops/OpsView.vue` | 工作流面板 |
 
 **API base URL**：同源部署时为 `/api/v1`（Caddy 反代）；分离部署时读 `import.meta.env.VITE_API_BASE`。默认走同源。
 
@@ -509,7 +515,7 @@ class LLMClient(Protocol):
 ## 8. 实现须知
 
 1. **抽取分批**：一次 LLM 调用最多喂 5 篇文章，正文各截断到 4000 字符。超过则分批多次调用，结果合并。批次大小放 `settings.EXTRACT_BATCH_SIZE`。
-2. **实体归一化**：`normalize.py::normalize_name(name)` = `" ".join(name.lower().split())`。落库用 `update_or_create(normalized_name=..., entity_type=...)`。别名合并时取并集后排序去重。
+2. **实体归一化**：`normalize.py::normalize_name(name)` = 小写后删除全部分隔符（空白、`-`、`_`、`.`、`·`/`・`/`‧`/`∙`），所以 `Open AI` / `OpenAI`、`小米 18 Fold` / `小米18 Fold`、`U-Net` / `Unet` 是同一条词条。落库用 `get_or_create(normalized_name=...)`——**不含 `entity_type`**，理由见 ADR-019。别名合并时取并集后排序去重。
 3. **谓词收敛**：LLM 容易生成同义谓词（"发布"/"推出"/"发行"）。`normalize.py` 里放一张 `PREDICATE_ALIASES` 映射表做归一，映射不到的保留原样。这张表是 D4 的产出之一。
 4. **prompt 版本记录**：每次抽取开始时快照当前各 prompt 的 `version_no` 写进 `ExtractionRun.prompt_versions`，同时写进每条 `Evidence`。抽取中途不重新读取。
 5. **时区**：`TIME_ZONE = "Asia/Shanghai"`，`USE_TZ = True`。DB 存 UTC，序列化输出 ISO8601 带时区。
