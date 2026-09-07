@@ -27,7 +27,11 @@ from apps.wiki.models import Concept, Entity, Linkage
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_LIMIT = 100
+# Chosen for readability on a fixed canvas, not for how much data fits — see
+# ADR-018 and its 2026-09-07 addendum. The frontend repeats this number
+# (GraphView.vue::DEFAULT_NODE_LIMIT); the two have to agree, because a `limit`
+# equal to the default is omitted from the URL.
+DEFAULT_LIMIT = 50
 MAX_LIMIT = 500
 
 # ARCHITECTURE 4.2: `min(60, 12 + value * 2)`. Small enough that a node with no

@@ -104,12 +104,11 @@ describe('GraphChart', () => {
     expect(edgeHtml).toBe('&lt;script&gt;alert(2)&lt;/script&gt;')
   })
 
-  it('labels only well-connected nodes once the graph gets crowded', () => {
-    // 150 labels at once is a wall of text; the rest surface on hover via
-    // emphasis.label, which is asserted here too so it is not silently lost.
-    const crowded: GraphData = {
+  /** `count` nodes, the first five of them hubs. */
+  function graphOf(count: number): GraphData {
+    return {
       ...sampleData,
-      nodes: Array.from({ length: 50 }, (_, index) => ({
+      nodes: Array.from({ length: count }, (_, index) => ({
         id: `e${index}`,
         name: `n${index}`,
         category: 'org',
@@ -117,7 +116,12 @@ describe('GraphChart', () => {
         symbolSize: 14,
       })),
     }
-    wrapper = mount(GraphChart, { props: { data: crowded } })
+  }
+
+  it('labels only well-connected nodes once the graph gets crowded', () => {
+    // 300 labels at once is a wall of text; the rest surface on hover via
+    // emphasis.label, which is asserted here too so it is not silently lost.
+    wrapper = mount(GraphChart, { props: { data: graphOf(80) } })
     const series = mockChart.setOption.mock.calls[0][0].series[0]
 
     expect(
@@ -128,6 +132,16 @@ describe('GraphChart', () => {
 
   it('labels everything while the graph is still small', () => {
     wrapper = mount(GraphChart, { props: { data: sampleData } })
+    const series = mockChart.setOption.mock.calls[0][0].series[0]
+
+    expect(series.data.every((node: { label: { show: boolean } }) => node.label.show)).toBe(true)
+  })
+
+  it('still labels everything at a full default-sized graph', () => {
+    // 50 is the API's default limit, so this is the view almost every visitor
+    // sees. Naming only the hubs there left 45 anonymous dots on the canvas —
+    // the threshold has to clear the default, not sit under it.
+    wrapper = mount(GraphChart, { props: { data: graphOf(50) } })
     const series = mockChart.setOption.mock.calls[0][0].series[0]
 
     expect(series.data.every((node: { label: { show: boolean } }) => node.label.show)).toBe(true)

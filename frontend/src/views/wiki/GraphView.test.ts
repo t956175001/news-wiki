@@ -198,6 +198,24 @@ describe('GraphView node clicks', () => {
     expect(lastGraphCall()).toMatchObject({ days: 30 })
   })
 
+  it('asks for the default node limit, matching the API', async () => {
+    // Hard-coded rather than imported from the component on purpose: this
+    // asserts the *number* agreed with graph.py::DEFAULT_LIMIT, and importing
+    // the constant would make the test agree with whatever it happens to be.
+    await mountAt('/graph')
+
+    expect(lastGraphCall()).toMatchObject({ limit: 50 })
+  })
+
+  it('leaves the default limit out of the URL, so a bare /graph link stays clean', async () => {
+    // The other half of that agreement (ADR-018): the URL omits `limit` when it
+    // matches the default, so a drifted frontend default would silently change
+    // what a shared /graph link means.
+    const { router } = await mountAt('/graph')
+
+    expect(router.currentRoute.value.query.limit).toBeUndefined()
+  })
+
   it('keeps days=0 meaning all history rather than falling back to the default', async () => {
     // `Number(query.days) || DEFAULT` would turn the widest view into the
     // narrower default — the one value where the falsy shortcut is a bug.

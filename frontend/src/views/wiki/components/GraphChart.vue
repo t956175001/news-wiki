@@ -14,8 +14,12 @@ echarts.use([EChartsGraphChart, TooltipComponent, LegendComponent, CanvasRendere
 // Hubs keep a permanent label; everything else reveals its name on hover via
 // `emphasis.label`, so nothing is actually hidden — it just is not shouted.
 const ALWAYS_LABEL_DEGREE = 3
-// Above this many nodes even the hubs go quiet, because "hub" stops being rare.
-const LABEL_ALL_BELOW = 40
+// Above this many nodes only the hubs keep a standing label. Kept just above
+// the default limit (50) on purpose: the view most people ever see should read
+// as names, not as anonymous dots. Measured on the demo graph at 1600x900 —
+// 50 labels sit clear of each other, and the count only climbs from here if
+// the slider is dragged, which is a deliberate ask for more data.
+const LABEL_ALL_BELOW = 60
 // How far the pointer may travel between press and release and still count as a
 // click. Nodes are `draggable`, and the browser fires `click` after a drag as
 // long as it ends on the same element — so without this, dragging one node to
@@ -44,9 +48,15 @@ let chart: echarts.ECharts | null = null
 function forceLayout(nodeCount: number) {
   const t = Math.min(1, Math.max(0, (nodeCount - 20) / 180))
   return {
-    repulsion: Math.round(220 - 160 * t),
-    edgeLength: [Math.round(60 - 25 * t), Math.round(140 - 80 * t)] as [number, number],
-    gravity: 0.05 + 0.13 * t,
+    repulsion: Math.round(210 - 150 * t),
+    edgeLength: [Math.round(58 - 22 * t), Math.round(135 - 75 * t)] as [number, number],
+    // The floor was raised from 0.05 once the default became 50 nodes. This
+    // graph is not one connected mesh — it is a handful of disconnected stars,
+    // and nothing but gravity holds two clusters that share no edge on the same
+    // screen. At the old floor five clusters drifted off the top and bottom of
+    // the canvas; edges kept each star intact, so the layout looked fine right
+    // up until you counted what was missing.
+    gravity: 0.11 + 0.09 * t,
     friction: 0.6,
   }
 }
@@ -88,11 +98,16 @@ function buildOption(data: GraphData): EChartsOption {
         roam: true,
         draggable: true,
         // Keep the layout box clear of the legend and of the hint line at the
-        // bottom left; otherwise nodes settle underneath both.
-        top: 34,
-        bottom: 28,
-        left: 20,
-        right: 20,
+        // bottom left; otherwise nodes settle underneath both. The box bounds
+        // *node centres*, not labels — a label is drawn to the right of its
+        // node and the force layout knows nothing about how wide it is, so the
+        // right inset carries the extra room for one. Without it, every name on
+        // the right-hand edge is clipped, which is exactly the nodes a reader
+        // most wants to identify.
+        top: 44,
+        bottom: 40,
+        left: 40,
+        right: 110,
         categories: data.categories,
         data: data.nodes.map((node) => ({
           ...node,

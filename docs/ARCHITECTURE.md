@@ -344,7 +344,7 @@ class DailyBrief(models.Model):
 | GET | `/api/v1/wiki/entities/{id}/` | **词条详情**，见下方响应结构 | — |
 | GET | `/api/v1/wiki/concepts/` | 概念列表。filter: `namespace`,`search` | — |
 | GET | `/api/v1/wiki/concepts/{id}/` | 概念详情 | — |
-| GET | `/api/v1/wiki/graph/` | 图谱数据。query: `entity_type`,`namespace`,`limit`(默认 100) | — |
+| GET | `/api/v1/wiki/graph/` | 图谱数据。query: `entity_type`,`namespace`,`limit`(默认 50) | — |
 | POST | `/api/v1/wiki/extract/` | 手动触发抽取。body `{"article_ids":[1,2]}` | **demo-write** |
 | GET | `/api/v1/brief/` | 简报列表（不含正文） | — |
 | GET | `/api/v1/brief/latest/` | 最新一期简报（含正文与 citations） | — |
@@ -431,7 +431,7 @@ class DailyBrief(models.Model):
 |---|---|---|
 | `entity_type` | 全部 | 只保留这些类型的实体节点，逗号分隔可传多个 |
 | `namespace` | 全部 | 只保留这些命名空间的概念节点，逗号分隔可传多个 |
-| `limit` | `100` | 节点数上限，硬上限 500。见 ADR-018 |
+| `limit` | `50` | 节点数上限，硬上限 500。见 ADR-018 |
 | `min_degree` | `1` | 最少关系数。默认隐藏孤立节点；传 `0` 显示全部并改用按排名截断 |
 | `days` | `30` | 只保留最近这么多天的关系，按**文章发布时间**算；传 `0` 取全部历史。见 ADR-019 |
 | `exclude_predicate` | `涉及` | 隐藏这些谓词的边，逗号分隔。传空值（`exclude_predicate=`）则不隐藏。见 ADR-019 |
