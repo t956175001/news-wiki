@@ -25,6 +25,16 @@ jobs:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
+          # The action's default is 10m, and the frontend build on this box
+          # takes most of it: the last deploy that touched frontend/ finished in
+          # 9m33s, the next one ran 27s longer and was cut off mid-`vite build`.
+          # That cut is worse than a plain failure. `up -d --build` is one
+          # command, so the containers were never restarted — and BuildKit lives
+          # in dockerd, so killing the SSH client does not stop the build. The
+          # site went down under a build that no longer had anyone waiting on it.
+          # 30m is head-room, not a target; if a deploy ever needs it, the
+          # frontend build belongs in CI as an artifact instead of on this VPS.
+          command_timeout: 30m
           script: |
             # Without this the script runs every line regardless of the last
             # one's exit code, and the job still reports success. A failed
