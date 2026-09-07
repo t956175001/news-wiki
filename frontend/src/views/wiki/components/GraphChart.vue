@@ -15,10 +15,14 @@ echarts.use([EChartsGraphChart, TooltipComponent, LegendComponent, CanvasRendere
 // `emphasis.label`, so nothing is actually hidden — it just is not shouted.
 const ALWAYS_LABEL_DEGREE = 3
 // Above this many nodes only the hubs keep a standing label. Kept just above
-// the default limit (50) on purpose: the view most people ever see should read
-// as names, not as anonymous dots. Measured on the demo graph at 1600x900 —
-// 50 labels sit clear of each other, and the count only climbs from here if
-// the slider is dragged, which is a deliberate ask for more data.
+// the default limit (50) on purpose, so that the view almost everyone sees is
+// always fully named rather than named-if-the-data-happens-to-be-dense: at a
+// threshold below the default, how many names appear depends on how connected
+// that day's graph is. The same 50-node default renders 49 labels on the live
+// site (117 links) and 5 on the bundled demo corpus (46 links) — same code,
+// same setting, and no way to tell from the page which one you are looking at.
+// Past the default the standing labels do thin out, but only once the slider
+// has been dragged, which is a deliberate ask for more data.
 const LABEL_ALL_BELOW = 60
 // How far the pointer may travel between press and release and still count as a
 // click. Nodes are `draggable`, and the browser fires `click` after a drag as
@@ -48,15 +52,9 @@ let chart: echarts.ECharts | null = null
 function forceLayout(nodeCount: number) {
   const t = Math.min(1, Math.max(0, (nodeCount - 20) / 180))
   return {
-    repulsion: Math.round(210 - 150 * t),
-    edgeLength: [Math.round(58 - 22 * t), Math.round(135 - 75 * t)] as [number, number],
-    // The floor was raised from 0.05 once the default became 50 nodes. This
-    // graph is not one connected mesh — it is a handful of disconnected stars,
-    // and nothing but gravity holds two clusters that share no edge on the same
-    // screen. At the old floor five clusters drifted off the top and bottom of
-    // the canvas; edges kept each star intact, so the layout looked fine right
-    // up until you counted what was missing.
-    gravity: 0.11 + 0.09 * t,
+    repulsion: Math.round(220 - 160 * t),
+    edgeLength: [Math.round(60 - 25 * t), Math.round(140 - 80 * t)] as [number, number],
+    gravity: 0.05 + 0.13 * t,
     friction: 0.6,
   }
 }
