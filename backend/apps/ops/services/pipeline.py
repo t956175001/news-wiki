@@ -58,6 +58,16 @@ PENDING_TTL_DAYS = 14
 # turn one row into a log file.
 MAX_ERROR_CHARS = 2000
 
+# How long a run may sit on "running" before the next run declares it abandoned.
+#
+# A row only leaves "running" when its own thread closes it, so if the process
+# dies first — deploy, OOM, an exception that gets past every guard — nothing in
+# the system will ever finish it. It then sits at the top of the ops panel and
+# every visitor who expands it polls it every 3 seconds, forever. Measured on
+# the live site a real run takes 35-110 minutes, so 6h is a wide margin between
+# "still working" and "nobody is coming".
+ORPHANED_RUN_TTL_HOURS = 6
+
 _OK = {"done", "success", "partial"}
 _BAD = {"failed", "partial"}
 
@@ -147,7 +157,17 @@ def _extract_phase(
         logger.info("run_id=%s nothing pending to extract", run.run_id)
         return "skipped"
 
-    outcome = execute_extraction(run, articles, totals, client=client, trigger=trigger, sleep=sleep)
+    try:
+        outcome = execute_extraction(run, articles, totals, client=client, trigger=trigger, sleep=sleep)
+    except Exception as exc:  # noqa: BLE001 - symmetric with ingest; the brief still has articles
+        # `execute_extraction` reports step failures through its outcome, so
+        # reaching here means something got past it. That must not cost the day
+        # its brief, and it must not escape into `run_daily` either — see the
+        # comment on ORPHANED_RUN_TTL_HOURS for what that used to do.
+        logger.exception("run_id=%s extraction failed", run.run_id)
+        errors.append(f"extract: {exc}")
+        return "failed"
+
     if outcome.error:
         errors.append(f"extract: {outcome.error}")
     return outcome.status
@@ -212,6 +232,27 @@ def _brief_phase(
     return "done"
 
 
+def _reap_orphaned_runs(run: ExtractionRun) -> int:
+    """Close rows whose thread is never coming back. Returns how many.
+
+    Deliberately runs at the start of the daily job rather than on boot: a
+    deploy restarts the process, and reaping on boot would shoot a run that is
+    still legitimately working in a container that simply restarted alongside.
+    """
+    cutoff = timezone.now() - dt.timedelta(hours=ORPHANED_RUN_TTL_HOURS)
+    orphans = ExtractionRun.objects.filter(status="running", started_at__lt=cutoff).exclude(pk=run.pk)
+
+    reaped = orphans.update(
+        status="failed",
+        finished_at=timezone.now(),
+        error_message=f"abandoned: still running after {ORPHANED_RUN_TTL_HOURS}h, the process that "
+        "started it is gone",
+    )
+    if reaped:
+        logger.warning("run_id=%s closed %s orphaned run(s)", run.run_id, reaped)
+    return reaped
+
+
 def _overall(phases: Sequence[str]) -> str:
     """Collapse the per-phase outcomes into the run's status."""
     if not any(phase in _BAD for phase in phases):
@@ -242,13 +283,27 @@ def run_daily(
     totals: dict[str, StepMeta] = {}
     errors: list[str] = []
 
-    phases = [
-        _ingest_phase(run, source_ids, article_fetcher, errors),
-        _extract_phase(run, totals, errors, client=client, trigger=trigger, sleep=sleep),
-        _brief_phase(run, date, totals, errors, client=client, trigger=trigger, sleep=sleep),
-    ]
+    _reap_orphaned_runs(run)
 
-    finish_run(run, totals, _overall(phases), started, "; ".join(errors)[:MAX_ERROR_CHARS])
+    # Built one at a time, and closed in a `finally`, because every phase
+    # handling its own failure is a policy, not a guarantee. When a read timeout
+    # got past one on 2026-09-10 the list comprehension never returned, so
+    # `finish_run` never ran and the row stayed on "running" for 35 hours.
+    phases: list[str] = []
+    try:
+        phases.append(_ingest_phase(run, source_ids, article_fetcher, errors))
+        phases.append(_extract_phase(run, totals, errors, client=client, trigger=trigger, sleep=sleep))
+        phases.append(_brief_phase(run, date, totals, errors, client=client, trigger=trigger, sleep=sleep))
+    except Exception as exc:
+        # Recorded, then re-raised: the background thread logs it, and
+        # swallowing it here would hide a bug the guards above should have
+        # caught. What must not survive is a row nothing will ever finish.
+        phases.append("failed")
+        errors.append(f"pipeline: {exc}")
+        raise
+    finally:
+        finish_run(run, totals, _overall(phases), started, "; ".join(errors)[:MAX_ERROR_CHARS])
+
     logger.info(
         "run_id=%s daily pipeline %s: ingest=%s extract=%s brief=%s, %s tokens, %s CNY",
         run.run_id,

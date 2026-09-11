@@ -16,7 +16,12 @@ from apps.common.exceptions import AppError, ContentFilteredError
 from apps.ingest.models import RawArticle
 from apps.ops.models import ExtractionRun
 from apps.ops.services import pipeline as pipeline_module
-from apps.ops.services.pipeline import MAX_ARTICLES_PER_RUN, PENDING_TTL_DAYS, run_daily
+from apps.ops.services.pipeline import (
+    MAX_ARTICLES_PER_RUN,
+    ORPHANED_RUN_TTL_HOURS,
+    PENDING_TTL_DAYS,
+    run_daily,
+)
 from apps.wiki.models import Entity, Linkage
 
 pytestmark = pytest.mark.django_db
@@ -488,3 +493,85 @@ def test_a_brief_failing_for_a_reason_other_than_an_empty_day_fails_the_step(
     assert "没有可用版本" in run.step_metrics["brief"]["error_message"]
     assert "brief:" in run.error_message
     assert Entity.objects.count() == 1
+
+
+# --- nothing may leave a run on "running" -------------------------------
+#
+# Production, 2026-09-10: a read timeout escaped the extraction phase, so
+# `finish_run` was never reached. The row sat on "running" for 35 hours, and
+# because it was the newest run it was the first one every /ops visitor
+# expanded — each of them polling it every 3 seconds, forever.
+
+
+def test_an_unexpected_extraction_crash_does_not_sink_the_brief(stub_ingest, mock_llm, monkeypatch):
+    """Extract must defend itself the way ingest already does."""
+    make_article(1)
+    mock_llm.push_json(BRIEF_PAYLOAD)
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("the read operation timed out")
+
+    monkeypatch.setattr(pipeline_module, "execute_extraction", _boom)
+
+    run = daily(mock_llm)
+
+    assert run.status == "partial"
+    assert run.finished_at is not None
+    assert "extract:" in run.error_message
+    assert "timed out" in run.error_message
+    assert run.step_metrics["brief"]["status"] == "done"
+
+
+def test_a_phase_blowing_up_still_closes_the_run(stub_ingest, mock_llm, monkeypatch):
+    """The backstop. Even with no phase left to catch it, the row gets closed.
+
+    The exception still propagates — the background thread logs it, and
+    swallowing it here would hide a real bug — but it no longer leaves a row
+    that nothing in the system will ever finish.
+    """
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("nothing above catches this one")
+
+    monkeypatch.setattr(pipeline_module, "_brief_phase", _boom)
+
+    with pytest.raises(RuntimeError, match="nothing above catches this one"):
+        daily(mock_llm)
+
+    run = ExtractionRun.objects.latest("started_at")
+    assert run.status != "running"
+    assert run.finished_at is not None
+    assert "nothing above catches this one" in run.error_message
+
+
+def test_a_run_orphaned_by_a_dead_process_is_swept_up_by_the_next_one(stub_ingest, mock_llm):
+    """A row only leaves "running" when its own thread closes it.
+
+    If the process dies first there is no thread left to do that, so the next
+    run has to, or the panel polls a corpse until someone edits the database.
+    """
+    orphan = ExtractionRun.objects.create(trigger="cron", status="running")
+    ExtractionRun.objects.filter(pk=orphan.pk).update(
+        started_at=timezone.now() - timedelta(hours=ORPHANED_RUN_TTL_HOURS, minutes=1)
+    )
+
+    daily(mock_llm)
+
+    orphan.refresh_from_db()
+    assert orphan.status == "failed"
+    assert orphan.finished_at is not None
+    assert "abandoned" in orphan.error_message
+
+
+def test_a_run_still_inside_its_window_is_left_alone(stub_ingest, mock_llm):
+    """Runs legitimately take up to ~2h in production. Do not shoot the living."""
+    working = ExtractionRun.objects.create(trigger="manual", status="running")
+    ExtractionRun.objects.filter(pk=working.pk).update(
+        started_at=timezone.now() - timedelta(hours=ORPHANED_RUN_TTL_HOURS, minutes=-1)
+    )
+
+    daily(mock_llm)
+
+    working.refresh_from_db()
+    assert working.status == "running"
+    assert working.finished_at is None
