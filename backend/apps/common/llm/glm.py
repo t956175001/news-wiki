@@ -6,12 +6,12 @@ attempt count lands in `ExtractionRun.step_metrics`. Two nested policies would
 turn 3 attempts into 9 and make the recorded numbers a lie.
 """
 
+import importlib
 import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
-import httpx
 from openai import APIConnectionError, APIStatusError, OpenAI, OpenAIError
 from tenacity import RetryError, Retrying, stop_after_attempt, wait_exponential
 
@@ -51,14 +51,35 @@ _BACKOFF = wait_exponential(multiplier=1, min=1, max=20)
 MAX_RETRY_AFTER = 60.0
 
 
+def _transport_error_types() -> tuple[type[BaseException], ...]:
+    """The error base of whichever HTTP library the SDK is using.
+
+    Looked up by name rather than imported, because which one it is has already
+    changed: openai 3.x moved from `httpx` to `httpx2`. Naming a single library
+    is how the first version of this handler became dead code — it still caught
+    `httpx.HTTPError`, which nothing in production could raise any more, while
+    its test kept passing because the test raised `httpx` errors too.
+    """
+    found = []
+    for name in ("httpx2", "httpx"):
+        try:
+            found.append(importlib.import_module(name).HTTPError)
+        except (ImportError, AttributeError):
+            continue
+    return tuple(found)
+
+
+TRANSPORT_ERRORS = _transport_error_types()
+
+
 def _is_retryable(exc: BaseException) -> bool:
     if isinstance(exc, APIConnectionError):  # covers APITimeoutError
         return True
     # The SDK maps transport faults to its own exceptions while it is building
     # the request, but a streamed body is consumed long after that — see
-    # `_collapse_stream`. A fault there arrives as the raw httpx exception and
-    # is the same kind of trouble, so it earns the same attempts.
-    if isinstance(exc, httpx.HTTPError):
+    # `_collapse_stream`. A fault there arrives as the library's own exception
+    # and is the same kind of trouble, so it earns the same attempts.
+    if TRANSPORT_ERRORS and isinstance(exc, TRANSPORT_ERRORS):
         return True
     if isinstance(exc, APIStatusError):
         return exc.status_code in RETRYABLE_STATUSES or exc.status_code >= 500
@@ -256,9 +277,9 @@ class GLMClient:
                 "run_id=%s LLM call to %s rejected (HTTP %s): %s", run_id, model, exc.status_code, exc
             )
             raise LLMError(f"LLM call rejected with HTTP {exc.status_code}: {exc}") from exc
-        except (OpenAIError, httpx.HTTPError) as exc:
+        except (OpenAIError, *TRANSPORT_ERRORS) as exc:
             # Provider exceptions must not escape this module; everything above
-            # only knows about AppError subclasses. `httpx.HTTPError` is in here
+            # only knows about AppError subclasses. TRANSPORT_ERRORS is in here
             # because the SDK's own mapping does not reach a streamed body: a
             # read timeout while draining one arrives raw, and on 2026-09-10 it
             # walked straight out of this module and left a run on "running".

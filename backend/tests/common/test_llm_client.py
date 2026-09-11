@@ -5,6 +5,8 @@ real token counts, retries that are counted and bounded, and provider exceptions
 that never escape as themselves.
 """
 
+import importlib
+import importlib.util
 from types import SimpleNamespace
 
 import httpx
@@ -467,19 +469,33 @@ def test_not_streaming_sends_no_stream_flag(build, harness):
     assert "stream" not in harness.calls[0]
 
 
-def test_a_read_timeout_while_draining_the_stream_is_still_an_llm_error(build):
+# Every HTTP library installed next to the SDK, so a swap cannot quietly turn
+# the handler under test into dead code. That is not hypothetical: the openai
+# SDK moved from `httpx` to `httpx2`, the first version of this fix named
+# `httpx`, and the handler kept passing a test that raised `httpx` errors while
+# matching nothing production could ever raise. Parametrising over what is
+# actually installed is what makes the test tell the truth.
+HTTP_LIBS = [name for name in ("httpx2", "httpx") if importlib.util.find_spec(name)]
+
+
+@pytest.fixture(params=HTTP_LIBS)
+def http_lib(request):
+    return importlib.import_module(request.param)
+
+
+def test_a_read_timeout_while_draining_the_stream_is_still_an_llm_error(build, http_lib):
     """Regression, production 2026-09-10: the read timed out *mid-stream*.
 
     The SDK maps transport faults to `APITimeoutError` while it is building the
     request, but a streamed body is consumed lazily — long after that mapping is
-    done — so the timeout surfaced as a raw `httpx` exception. It matched none of
-    the handlers here, escaped the module against its own stated contract, and
-    the daily run sat on "running" for 35 hours.
+    done — so the timeout surfaces as a raw HTTP-library exception. It matched
+    none of the handlers here, escaped the module against its own stated
+    contract, and the daily run sat on "running" for 35 hours.
     """
 
     def _dies_mid_stream():
         yield _chunk('{"entities"')
-        raise httpx.ReadTimeout("The read operation timed out")
+        raise http_lib.ReadTimeout("The read operation timed out")
 
     client = build([_dies_mid_stream() for _ in range(MAX_ATTEMPTS)], stream=True)
 
@@ -487,7 +503,7 @@ def test_a_read_timeout_while_draining_the_stream_is_still_an_llm_error(build):
         client.chat([{"role": "user", "content": "hi"}])
 
 
-def test_a_read_timeout_mid_stream_is_retried_like_any_other_transport_fault(build, harness):
+def test_a_read_timeout_mid_stream_is_retried_like_any_other_transport_fault(build, harness, http_lib):
     """Same fault as `APIConnectionError`, so it gets the same three attempts.
 
     Timing out at the 300s ceiling is not a verdict — the calls this model makes
@@ -496,7 +512,7 @@ def test_a_read_timeout_mid_stream_is_retried_like_any_other_transport_fault(bui
 
     def _dies_mid_stream():
         yield _chunk("部分")
-        raise httpx.ReadTimeout("The read operation timed out")
+        raise http_lib.ReadTimeout("The read operation timed out")
 
     client = build(
         [_dies_mid_stream(), _stream(_chunk("{}"), _chunk(usage=None))],
@@ -507,3 +523,16 @@ def test_a_read_timeout_mid_stream_is_retried_like_any_other_transport_fault(bui
 
     assert result["content"] == "{}"
     assert len(harness.calls) == 2
+
+
+def test_the_transport_error_list_covers_every_installed_http_library():
+    """The guard on the guard.
+
+    If the SDK ever pulls in a third HTTP library, TRANSPORT_ERRORS silently
+    stops covering it and both tests above start testing nothing. Fail here
+    instead, where the message says what to add.
+    """
+    assert glm.TRANSPORT_ERRORS, "no HTTP library found; the handler would be dead code"
+    for name in HTTP_LIBS:
+        base = importlib.import_module(name).HTTPError
+        assert base in glm.TRANSPORT_ERRORS, f"{name}.HTTPError is not covered"
