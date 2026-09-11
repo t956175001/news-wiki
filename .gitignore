@@ -11,6 +11,9 @@ docs/MIGRATION.md
 docs/RESUME.md
 docs/ACCESS.md
 
+# --- 本地运维分析工具（依赖只装本机 venv，产物含访客 IP，不入库） ---
+scripts/analyze-access-log.py
+
 # --- Python ---
 __pycache__/
 *.py[cod]
