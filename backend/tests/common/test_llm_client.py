@@ -13,7 +13,7 @@ from openai import APIConnectionError, APIStatusError, OpenAIError
 
 from apps.common.exceptions import ContentFilteredError, LLMError
 from apps.common.llm import glm
-from apps.common.llm.glm import GLMClient
+from apps.common.llm.glm import MAX_ATTEMPTS, GLMClient
 from apps.common.llm.ratelimit import TokenBucket
 
 BASE_URL = "https://example.invalid/api/paas/v4"
@@ -465,3 +465,45 @@ def test_not_streaming_sends_no_stream_flag(build, harness):
     client.chat([{"role": "user", "content": "hi"}])
 
     assert "stream" not in harness.calls[0]
+
+
+def test_a_read_timeout_while_draining_the_stream_is_still_an_llm_error(build):
+    """Regression, production 2026-09-10: the read timed out *mid-stream*.
+
+    The SDK maps transport faults to `APITimeoutError` while it is building the
+    request, but a streamed body is consumed lazily — long after that mapping is
+    done — so the timeout surfaced as a raw `httpx` exception. It matched none of
+    the handlers here, escaped the module against its own stated contract, and
+    the daily run sat on "running" for 35 hours.
+    """
+
+    def _dies_mid_stream():
+        yield _chunk('{"entities"')
+        raise httpx.ReadTimeout("The read operation timed out")
+
+    client = build([_dies_mid_stream() for _ in range(MAX_ATTEMPTS)], stream=True)
+
+    with pytest.raises(LLMError):
+        client.chat([{"role": "user", "content": "hi"}])
+
+
+def test_a_read_timeout_mid_stream_is_retried_like_any_other_transport_fault(build, harness):
+    """Same fault as `APIConnectionError`, so it gets the same three attempts.
+
+    Timing out at the 300s ceiling is not a verdict — the calls this model makes
+    land at 200-215s, so the next attempt has a real chance.
+    """
+
+    def _dies_mid_stream():
+        yield _chunk("部分")
+        raise httpx.ReadTimeout("The read operation timed out")
+
+    client = build(
+        [_dies_mid_stream(), _stream(_chunk("{}"), _chunk(usage=None))],
+        stream=True,
+    )
+
+    result = client.chat([{"role": "user", "content": "hi"}])
+
+    assert result["content"] == "{}"
+    assert len(harness.calls) == 2

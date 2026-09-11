@@ -11,6 +11,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
+import httpx
 from openai import APIConnectionError, APIStatusError, OpenAI, OpenAIError
 from tenacity import RetryError, Retrying, stop_after_attempt, wait_exponential
 
@@ -52,6 +53,12 @@ MAX_RETRY_AFTER = 60.0
 
 def _is_retryable(exc: BaseException) -> bool:
     if isinstance(exc, APIConnectionError):  # covers APITimeoutError
+        return True
+    # The SDK maps transport faults to its own exceptions while it is building
+    # the request, but a streamed body is consumed long after that — see
+    # `_collapse_stream`. A fault there arrives as the raw httpx exception and
+    # is the same kind of trouble, so it earns the same attempts.
+    if isinstance(exc, httpx.HTTPError):
         return True
     if isinstance(exc, APIStatusError):
         return exc.status_code in RETRYABLE_STATUSES or exc.status_code >= 500
@@ -249,9 +256,12 @@ class GLMClient:
                 "run_id=%s LLM call to %s rejected (HTTP %s): %s", run_id, model, exc.status_code, exc
             )
             raise LLMError(f"LLM call rejected with HTTP {exc.status_code}: {exc}") from exc
-        except OpenAIError as exc:
+        except (OpenAIError, httpx.HTTPError) as exc:
             # Provider exceptions must not escape this module; everything above
-            # only knows about AppError subclasses.
+            # only knows about AppError subclasses. `httpx.HTTPError` is in here
+            # because the SDK's own mapping does not reach a streamed body: a
+            # read timeout while draining one arrives raw, and on 2026-09-10 it
+            # walked straight out of this module and left a run on "running".
             logger.error("run_id=%s LLM call to %s failed: %s", run_id, model, exc)
             raise LLMError(f"LLM call failed: {exc}") from exc
 
